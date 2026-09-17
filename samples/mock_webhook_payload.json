@@ -1,0 +1,12 @@
+{
+  "provider_call_id": "call_exotel_987654321_carol",
+  "telephony_provider": "exotel",
+  "from_number": "+15550001111",
+  "to_number": "+15550009012",
+  "direction": "outbound",
+  "call_status": "completed",
+  "duration_seconds": 142,
+  "recording_url": "https://storage.googleapis.com/hash-adz-recordings/sample_call_carol.wav",
+  "agent_id": "john.parker@example.com",
+  "call_type": "sales_enquiry"
+}
