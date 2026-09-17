@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -115,3 +115,26 @@ class PipelineResponse(BaseModel):
     frappe_call_log_id: Optional[str] = None
     frappe_task_id: Optional[str] = None
     message: str = "Call successfully processed"
+    
+    # Metadata for dashboard
+    duration_seconds: Optional[int] = None
+    direction: Optional[CallDirection] = None
+    event_timestamp: Optional[datetime] = None
+    agent_id: Optional[str] = None
+
+
+class DashboardMetricsResponse(BaseModel):
+    total_calls: int = 0
+    completed_calls: int = 0
+    missed_calls: int = 0
+    average_call_duration_seconds: float = 0.0
+    calls_per_telecaller: Dict[str, int] = {}
+    lead_quality_distribution: Dict[str, int] = {}
+    call_outcome_distribution: Dict[str, int] = {}
+    follow_ups_due: int = 0
+    follow_ups_overdue: int = 0
+
+
+class DashboardCallFeedResponse(BaseModel):
+    calls: List[PipelineResponse] = []
+

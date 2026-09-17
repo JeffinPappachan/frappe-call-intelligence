@@ -1,0 +1,830 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Call Intelligence Dashboard</title>
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <style>
+        :root {
+            --bg-color: #0f111a;
+            --surface-color: #1a1d27;
+            --surface-color-light: #24283b;
+            --text-primary: #c0caf5;
+            --text-secondary: #7aa2f7;
+            --accent-primary: #7aa2f7;
+            --accent-secondary: #bb9af7;
+            --success: #9ece6a;
+            --warning: #e0af68;
+            --danger: #f7768e;
+            --border-color: rgba(122, 162, 247, 0.15);
+            --glass-bg: rgba(26, 29, 39, 0.7);
+            --font-family: 'Inter', sans-serif;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            font-family: var(--font-family);
+            -webkit-font-smoothing: antialiased;
+            overflow-x: hidden;
+        }
+
+        /* Glassmorphism utility */
+        .glass-panel {
+            background: var(--glass-bg);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1.5rem 2rem;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: rgba(15, 17, 26, 0.85);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #fff;
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .controls {
+            display: flex;
+            gap: 1rem;
+        }
+
+        button {
+            background: var(--surface-color-light);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            font-family: var(--font-family);
+            font-weight: 500;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.2s ease;
+        }
+
+        button:hover {
+            background: var(--accent-primary);
+            color: #fff;
+            transform: translateY(-1px);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            color: #fff;
+            border: none;
+        }
+        
+        .btn-primary:hover {
+            box-shadow: 0 4px 15px rgba(122, 162, 247, 0.4);
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        /* KPI Cards */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .kpi-card {
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            position: relative;
+            overflow: hidden;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        
+        .kpi-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+            border-color: var(--accent-primary);
+        }
+
+        .kpi-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 4px;
+            height: 100%;
+            background: linear-gradient(to bottom, var(--accent-primary), var(--accent-secondary));
+        }
+
+        .kpi-title {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .kpi-value {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: #fff;
+        }
+
+        /* Dashboard Grid */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .chart-container {
+            padding: 1.5rem;
+            min-height: 300px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .chart-container h3 {
+            margin-top: 0;
+            margin-bottom: 1rem;
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #fff;
+        }
+
+        .chart-wrapper {
+            position: relative;
+            flex: 1;
+            width: 100%;
+        }
+
+        /* Table */
+        .table-container {
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+        }
+
+        th, td {
+            padding: 1rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        th {
+            font-weight: 600;
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        tbody tr {
+            transition: background 0.2s ease;
+            cursor: pointer;
+        }
+
+        tbody tr:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .badge {
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .badge-hot { background: rgba(247, 118, 142, 0.2); color: var(--danger); }
+        .badge-warm { background: rgba(224, 175, 104, 0.2); color: var(--warning); }
+        .badge-cold { background: rgba(158, 206, 106, 0.2); color: var(--success); }
+        
+        .badge-review { background: rgba(187, 154, 247, 0.2); color: var(--accent-secondary); }
+
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(4px);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .modal.active {
+            display: flex;
+            opacity: 1;
+        }
+
+        .modal-content {
+            background: var(--surface-color);
+            width: 90%;
+            max-width: 800px;
+            max-height: 90vh;
+            border-radius: 16px;
+            border: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            transform: scale(0.95);
+            transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        .modal.active .modal-content {
+            transform: scale(1);
+        }
+
+        .modal-header {
+            padding: 1.5rem;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: var(--surface-color-light);
+        }
+
+        .modal-header h2 {
+            margin: 0;
+            font-size: 1.25rem;
+            color: #fff;
+        }
+
+        .close-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            padding: 0.5rem;
+        }
+
+        .close-btn:hover {
+            color: #fff;
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .modal-body {
+            padding: 1.5rem;
+            overflow-y: auto;
+            flex: 1;
+        }
+        
+        .intel-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+        
+        .intel-item {
+            background: rgba(0,0,0,0.2);
+            padding: 1rem;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }
+        
+        .intel-label {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            margin-bottom: 0.25rem;
+        }
+        
+        .intel-value {
+            font-size: 1rem;
+            font-weight: 500;
+            color: #fff;
+        }
+
+        .transcript-box {
+            background: #000;
+            padding: 1.5rem;
+            border-radius: 8px;
+            font-family: monospace;
+            font-size: 0.9rem;
+            line-height: 1.6;
+            color: #a9b1d6;
+            white-space: pre-wrap;
+            border: 1px solid var(--border-color);
+        }
+
+        /* Utility */
+        .spinner {
+            display: inline-block;
+            width: 1rem;
+            height: 1rem;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        
+        .hidden { display: none !important; }
+
+        #uploadForm {
+            display: none;
+        }
+
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="logo">
+            <i data-lucide="phone-call"></i>
+            Manager Call Intelligence
+        </div>
+        <div class="controls">
+            <button onclick="refreshDashboard()" id="refreshBtn">
+                <i data-lucide="refresh-cw" size="18"></i> Refresh
+            </button>
+            <button onclick="simulateCall()" class="btn-primary" id="simulateBtn">
+                <i data-lucide="play" size="18"></i> Simulate Call
+            </button>
+            <button onclick="document.getElementById('audioUpload').click()">
+                <i data-lucide="upload" size="18"></i> Upload Audio
+            </button>
+            <input type="file" id="audioUpload" accept="audio/*" class="hidden" onchange="uploadAudio(this)">
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- KPIs -->
+        <div class="kpi-grid">
+            <div class="glass-panel kpi-card">
+                <div class="kpi-title">Total Calls</div>
+                <div class="kpi-value" id="kpi-total">-</div>
+            </div>
+            <div class="glass-panel kpi-card">
+                <div class="kpi-title">Completed</div>
+                <div class="kpi-value" style="color: var(--success)" id="kpi-completed">-</div>
+            </div>
+            <div class="glass-panel kpi-card">
+                <div class="kpi-title">Missed/Failed</div>
+                <div class="kpi-value" style="color: var(--danger)" id="kpi-missed">-</div>
+            </div>
+            <div class="glass-panel kpi-card">
+                <div class="kpi-title">Avg Duration (sec)</div>
+                <div class="kpi-value" id="kpi-duration">-</div>
+            </div>
+            <div class="glass-panel kpi-card">
+                <div class="kpi-title">Follow-ups Due</div>
+                <div class="kpi-value" style="color: var(--warning)" id="kpi-due">-</div>
+            </div>
+        </div>
+
+        <!-- Charts Grid -->
+        <div class="dashboard-grid">
+            <div class="glass-panel chart-container">
+                <h3>Calls by Telecaller</h3>
+                <div class="chart-wrapper">
+                    <canvas id="telecallerChart"></canvas>
+                </div>
+            </div>
+            <div class="glass-panel chart-container">
+                <h3>Lead Quality</h3>
+                <div class="chart-wrapper">
+                    <canvas id="qualityChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Table -->
+        <div class="glass-panel table-container">
+            <h3>Recent Calls</h3>
+            <table id="callsTable">
+                <thead>
+                    <tr>
+                        <th>Date & Time</th>
+                        <th>Lead</th>
+                        <th>Agent</th>
+                        <th>Duration</th>
+                        <th>Outcome</th>
+                        <th>Quality</th>
+                        <th>Review</th>
+                    </tr>
+                </thead>
+                <tbody id="callsTableBody">
+                    <!-- Rows populated by JS -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Call Detail Modal -->
+    <div class="modal" id="callModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Call Intelligence Details</h2>
+                <button class="close-btn" onclick="closeModal()">
+                    <i data-lucide="x" size="24"></i>
+                </button>
+            </div>
+            <div class="modal-body" id="modalBody">
+                <!-- Populated by JS -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Chart Instances
+        let telecallerChart, qualityChart;
+        let recentCallsData = [];
+
+        // Formatting utilities
+        const formatDate = (dateString) => {
+            if (!dateString) return 'N/A';
+            const d = new Date(dateString);
+            return d.toLocaleString();
+        };
+
+        const getQualityBadge = (quality) => {
+            if (!quality) return '';
+            const map = {
+                'Hot': 'badge-hot',
+                'Warm': 'badge-warm',
+                'Cold': 'badge-cold'
+            };
+            return `<span class="badge ${map[quality] || ''}">${quality}</span>`;
+        };
+
+        // Initialize Charts
+        const initCharts = () => {
+            Chart.defaults.color = '#7aa2f7';
+            Chart.defaults.font.family = 'Inter';
+            
+            const ctx1 = document.getElementById('telecallerChart').getContext('2d');
+            telecallerChart = new Chart(ctx1, {
+                type: 'bar',
+                data: { labels: [], datasets: [] },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: { beginAtZero: true, grid: { color: 'rgba(122,162,247,0.1)' } },
+                        x: { grid: { display: false } }
+                    },
+                    plugins: { legend: { display: false } }
+                }
+            });
+
+            const ctx2 = document.getElementById('qualityChart').getContext('2d');
+            qualityChart = new Chart(ctx2, {
+                type: 'doughnut',
+                data: { labels: [], datasets: [] },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { position: 'bottom' } },
+                    cutout: '70%'
+                }
+            });
+        };
+
+        const updateCharts = (metrics) => {
+            // Update Telecaller Bar Chart
+            const agents = Object.keys(metrics.calls_per_telecaller);
+            const callCounts = Object.values(metrics.calls_per_telecaller);
+            
+            telecallerChart.data = {
+                labels: agents,
+                datasets: [{
+                    label: 'Calls Processed',
+                    data: callCounts,
+                    backgroundColor: '#7aa2f7',
+                    borderRadius: 4
+                }]
+            };
+            telecallerChart.update();
+
+            // Update Quality Doughnut Chart
+            const qualities = Object.keys(metrics.lead_quality_distribution);
+            const qualCounts = Object.values(metrics.lead_quality_distribution);
+            const colors = {
+                'Hot': '#f7768e',
+                'Warm': '#e0af68',
+                'Cold': '#9ece6a'
+            };
+            const bgColors = qualities.map(q => colors[q] || '#bb9af7');
+
+            qualityChart.data = {
+                labels: qualities,
+                datasets: [{
+                    data: qualCounts,
+                    backgroundColor: bgColors,
+                    borderWidth: 0
+                }]
+            };
+            qualityChart.update();
+        };
+
+        const fetchMetrics = async () => {
+            try {
+                const res = await fetch('/api/v1/dashboard/metrics');
+                const data = await res.json();
+                
+                document.getElementById('kpi-total').textContent = data.total_calls;
+                document.getElementById('kpi-completed').textContent = data.completed_calls;
+                document.getElementById('kpi-missed').textContent = data.missed_calls;
+                document.getElementById('kpi-duration').textContent = data.average_call_duration_seconds;
+                document.getElementById('kpi-due').textContent = `${data.follow_ups_due} (+${data.follow_ups_overdue} overdue)`;
+                
+                updateCharts(data);
+            } catch (err) {
+                console.error("Failed to fetch metrics", err);
+            }
+        };
+
+        const fetchCalls = async () => {
+            try {
+                const res = await fetch('/api/v1/dashboard/calls');
+                const data = await res.json();
+                recentCallsData = data.calls;
+                
+                const tbody = document.getElementById('callsTableBody');
+                tbody.innerHTML = '';
+                
+                if (recentCallsData.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;">No calls processed yet.</td></tr>';
+                    return;
+                }
+
+                recentCallsData.forEach((call, index) => {
+                    let outcome = '<span style="color:var(--text-secondary)">Not analyzed</span>';
+                    let quality = '<span style="color:var(--text-secondary)">Not analyzed</span>';
+                    let review = '<span style="color:var(--text-secondary)">Not analyzed</span>';
+                    
+                    if (call.intelligence) {
+                        outcome = call.intelligence.call_outcome || '-';
+                        quality = getQualityBadge(call.intelligence.lead_quality) || '-';
+                        review = call.intelligence.review_flag 
+                            ? '<span class="badge badge-review"><i data-lucide="alert-circle" size="12"></i> Review</span>' 
+                            : 'OK';
+                    }
+                    
+                    const tr = document.createElement('tr');
+                    tr.onclick = () => openCallDetails(index);
+                    tr.innerHTML = `
+                        <td>${formatDate(call.event_timestamp)}</td>
+                        <td>${call.matched_lead || 'Unknown'}</td>
+                        <td>${call.agent_id || 'Unknown'}</td>
+                        <td>${call.duration_seconds || 0}s</td>
+                        <td>${outcome}</td>
+                        <td>${quality}</td>
+                        <td>${review}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+                lucide.createIcons();
+            } catch (err) {
+                console.error("Failed to fetch calls", err);
+            }
+        };
+
+        const minSpinnerDelay = (ms = 1000) => new Promise(resolve => setTimeout(resolve, ms));
+
+        const refreshDashboard = async (showSpinner = true) => {
+            const btn = document.getElementById('refreshBtn');
+            let icon;
+            if (showSpinner) {
+                btn.disabled = true;
+                icon = btn.querySelector('i, svg');
+                if(icon) icon.classList.add('spinner');
+            }
+            
+            try {
+                const promises = [fetchMetrics(), fetchCalls()];
+                if (showSpinner) promises.push(minSpinnerDelay(1000));
+                await Promise.all(promises);
+            } catch (err) {
+                console.error("Dashboard refresh failed:", err);
+            } finally {
+                if (showSpinner) {
+                    btn.disabled = false;
+                    icon = btn.querySelector('i, svg');
+                    if(icon) icon.classList.remove('spinner');
+                }
+            }
+        };
+
+        const openCallDetails = (index) => {
+            const call = recentCallsData[index];
+            
+            const modalBody = document.getElementById('modalBody');
+            
+            let intelSection = '';
+            if (call.intelligence) {
+                const i = call.intelligence;
+                intelSection = `
+                <h3 style="margin-top:0; color:#fff; font-size:1rem;">Structured Extraction</h3>
+                <div class="intel-grid">
+                    <div class="intel-item"><div class="intel-label">Summary</div><div class="intel-value">${i.call_summary || '-'}</div></div>
+                    <div class="intel-item"><div class="intel-label">Customer Intent</div><div class="intel-value">${i.customer_intent || '-'}</div></div>
+                    <div class="intel-item"><div class="intel-label">Outcome</div><div class="intel-value">${i.call_outcome || '-'}</div></div>
+                    <div class="intel-item"><div class="intel-label">Primary Objection</div><div class="intel-value">${i.primary_objection || '-'}</div></div>
+                    <div class="intel-item"><div class="intel-label">Lead Quality</div><div class="intel-value">${getQualityBadge(i.lead_quality) || '-'}</div></div>
+                    <div class="intel-item"><div class="intel-label">Next Action</div><div class="intel-value">${i.next_action || '-'}</div></div>
+                    <div class="intel-item"><div class="intel-label">Follow-up Date</div><div class="intel-value">${formatDate(i.follow_up_at)}</div></div>
+                    <div class="intel-item"><div class="intel-label">Review Flag</div><div class="intel-value">${i.review_flag ? 'Needs Review' : 'OK'}</div></div>
+                </div>
+                <div class="intel-item" style="margin-bottom:1.5rem;">
+                    <div class="intel-label">Agent Quality Notes</div>
+                    <div class="intel-value">${i.agent_quality_notes || '-'}</div>
+                </div>`;
+            } else {
+                intelSection = `
+                <h3 style="margin-top:0; color:#fff; font-size:1rem;">Structured Extraction</h3>
+                <div style="color: var(--text-secondary); margin-bottom: 1.5rem;">
+                    Not analyzed (Live CRM Record without intelligence data)
+                </div>`;
+            }
+
+            modalBody.innerHTML = `
+                <div style="margin-bottom: 1.5rem;">
+                    <div style="font-size: 1.1rem; color: var(--text-primary); font-weight: 600;">Call ID: ${call.provider_call_id}</div>
+                    <div style="color: var(--text-secondary); margin-top: 0.5rem;">Message: ${call.message || '-'}</div>
+                    ${call.frappe_call_log_id ? `<div style="color: var(--success); margin-top: 0.25rem;">CRM Log: ${call.frappe_call_log_id}</div>` : ''}
+                    ${call.frappe_task_id ? `<div style="color: var(--warning); margin-top: 0.25rem;">CRM Task: ${call.frappe_task_id}</div>` : ''}
+                </div>
+                
+                ${intelSection}
+
+                <h3 style="color:#fff; font-size:1rem;">Audio Transcript</h3>
+                <div class="transcript-box">${call.transcript || 'No transcript available.'}</div>
+            `;
+            
+            document.getElementById('callModal').classList.add('active');
+        };
+
+        const closeModal = () => {
+            document.getElementById('callModal').classList.remove('active');
+        };
+
+        const simulateCall = async () => {
+            const btn = document.getElementById('simulateBtn');
+            btn.disabled = true;
+            let icon = btn.querySelector('i, svg');
+            if(icon) icon.classList.add('spinner');
+            
+            try {
+                // Generate a random CallId for idempotency uniqueness
+                const randomId = 'MOCK-' + Math.random().toString(36).substring(2, 10);
+                
+                const payload = {
+                    provider_call_id: randomId,
+                    telephony_provider: "exotel",
+                    from_number: "john.demo@example.com", // Trigger matching agent
+                    to_number: "+1 555 000 9012", // Trigger Carol Smith
+                    direction: "outbound",
+                    call_status: "completed",
+                    duration_seconds: 125,
+                    recording_url: "mock_call.wav",
+                    agent_id: "john.demo@example.com",
+                    call_type: "sales_enquiry"
+                };
+
+                const res = await fetch('/api/v1/telephony/webhook', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                
+                await minSpinnerDelay(1000);
+                
+                if(res.ok) {
+                    await refreshDashboard(false);
+                } else {
+                    const errText = await res.text();
+                    icon = btn.querySelector('i, svg');
+                    if(icon) icon.classList.remove('spinner');
+                    alert('Simulation failed: ' + errText);
+                }
+            } catch (err) {
+                await minSpinnerDelay(1000);
+                console.error("Simulation Error:", err);
+                icon = btn.querySelector('i, svg');
+                if(icon) icon.classList.remove('spinner');
+                alert('Simulation Error');
+            } finally {
+                btn.disabled = false;
+                icon = btn.querySelector('i, svg');
+                if(icon) icon.classList.remove('spinner');
+            }
+        };
+
+        const uploadAudio = async (input) => {
+            if (!input.files || input.files.length === 0) return;
+            const file = input.files[0];
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('lead_phone', '+1 555 000 5678'); // Bob Martinez
+            formData.append('agent_id', 'sarah.demo@example.com');
+            formData.append('direction', 'inbound');
+            formData.append('duration_seconds', '60');
+            
+            // Show loading state
+            const uploadBtn = input.previousElementSibling;
+            uploadBtn.disabled = true;
+            const originalHtml = uploadBtn.innerHTML;
+            uploadBtn.innerHTML = '<i class="spinner"></i> Uploading...';
+            
+            try {
+                const res = await fetch('/api/v1/telephony/process-audio', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                await minSpinnerDelay(1000);
+                
+                if(res.ok) {
+                    await refreshDashboard(false);
+                } else {
+                    const errText = await res.text();
+                    uploadBtn.innerHTML = originalHtml;
+                    if(typeof lucide !== 'undefined') lucide.createIcons();
+                    alert('Upload failed: ' + errText);
+                }
+            } catch (err) {
+                await minSpinnerDelay(1000);
+                console.error("Upload Error:", err);
+                uploadBtn.innerHTML = originalHtml;
+                if(typeof lucide !== 'undefined') lucide.createIcons();
+                alert('Upload Error');
+            } finally {
+                uploadBtn.disabled = false;
+                uploadBtn.innerHTML = originalHtml;
+                input.value = ''; // reset
+                if(typeof lucide !== 'undefined') lucide.createIcons();
+            }
+        };
+
+        // Close modal on outside click
+        window.onclick = (e) => {
+            const modal = document.getElementById('callModal');
+            if (e.target === modal) closeModal();
+        };
+
+        // Init
+        document.addEventListener('DOMContentLoaded', () => {
+            initCharts();
+            refreshDashboard();
+            setTimeout(() => {
+                if (typeof lucide !== 'undefined') {
+                    lucide.createIcons();
+                }
+            }, 100);
+        });
+    </script>
+</body>
+</html>

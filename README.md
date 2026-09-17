@@ -133,7 +133,14 @@ uvicorn src.server:app --reload --host 0.0.0.0 --port 8000
 ```
 
 - API Documentation (Swagger UI): [http://localhost:8000/docs](http://localhost:8000/docs)
+- Manager Dashboard UI: [http://localhost:8000/dashboard](http://localhost:8000/dashboard)
 - Health Check: [http://localhost:8000/health](http://localhost:8000/health)
+
+### API Endpoints
+- `POST /api/v1/telephony/webhook`: Core entrypoint for Exotel/Twilio call completion webhooks.
+- `POST /api/v1/telephony/process-audio`: Direct audio upload for testing & transcription via multipart form-data.
+- `GET /api/v1/dashboard/metrics`: Analytics endpoint returning aggregated KPIs, telecaller metrics, and follow-ups.
+- `GET /api/v1/dashboard/calls`: Returns feed of recent calls processed by the pipeline.
 
 ### Test the Webhook with Sample Data
 
@@ -175,12 +182,24 @@ Tests cover:
 
 ---
 
-## 8. Current Foundation & Next Implementation Steps
+## 8. Live Frappe CRM Setup
 
-- [x] Foundation scaffolded (schemas, STT/AI interfaces, Frappe client, pipeline, FastAPI server).
-- [x] Webhook idempotency and deduplication guard implemented.
-- [x] Automated test suite passing.
-- [ ] Connect live Frappe Cloud credentials (API Key & Secret) and verify live REST write-back.
-- [ ] Connect live STT/LLM provider (Groq / OpenAI Whisper & LLaMA/GPT-4o).
-- [ ] Implement Manager Dashboard UI.
-- [ ] Record end-to-end demonstration and complete documentation deliverables.
+To connect to the live CRM instance at `https://crm-chm-lly.nvi.frappe.cloud`:
+1. Generate an API Key and Secret from your Frappe User profile (in Desk -> Settings -> API Access).
+2. Add them to `.env` as `FRAPPE_API_KEY` and `FRAPPE_API_SECRET`.
+3. Set `MOCK_MODE=false`.
+4. Ensure target Leads exist in the CRM (matching phone numbers).
+The pipeline will now lookup live leads, create actual CRM Call Logs, update Lead stages, and assign Follow-up Tasks to CRM Users.
+
+---
+
+## 9. Current Foundation & Next Implementation Steps
+
+- [x] Phase 1: Foundation scaffolded (schemas, STT/AI interfaces, Frappe client, pipeline, FastAPI server).
+- [x] Phase 1: Webhook idempotency and deduplication guard implemented.
+- [x] Phase 1: Connect live Frappe Cloud credentials and verify live REST write-back.
+- [x] Phase 2: Implement Manager Dashboard UI (http://localhost:8000/dashboard).
+- [x] Phase 2: Implement Backend Analytics (`/metrics`, `/calls`).
+- [x] Automated test suite passing (18 tests).
+- [ ] Phase 3: Add external production LLM & STT API providers.
+- [ ] Phase 3: Final demonstration recording.

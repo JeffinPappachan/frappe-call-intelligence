@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
+from datetime import datetime
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
 from src.ai_service import AIService, get_ai_service
 from src.frappe_client import FrappeCRMClient, get_frappe_client
@@ -29,6 +30,10 @@ class IdempotencyStore(ABC):
     def set(self, key: str, value: PipelineResponse) -> None:
         pass
 
+    @abstractmethod
+    def get_all(self) -> List[PipelineResponse]:
+        pass
+
 
 class InMemoryIdempotencyStore(IdempotencyStore):
     """In-memory idempotency cache designed to be easily swapped with SQLite or Redis."""
@@ -44,6 +49,9 @@ class InMemoryIdempotencyStore(IdempotencyStore):
 
     def set(self, key: str, value: PipelineResponse) -> None:
         self._cache[key] = value
+
+    def get_all(self) -> List[PipelineResponse]:
+        return list(self._cache.values())
 
     def clear(self) -> None:
         self._cache.clear()
@@ -68,6 +76,75 @@ class CallIntelligencePipeline:
         self.ai_service = ai_service or get_ai_service()
         self.frappe_client = frappe_client or get_frappe_client()
         self.idempotency_store = idempotency_store or InMemoryIdempotencyStore()
+
+        from src.config import get_settings
+        if get_settings().mock_mode and len(self.idempotency_store.get_all()) == 0:
+            self._seed_mock_data()
+
+    def _seed_mock_data(self):
+        """Seed realistic mock calls for the dashboard on startup."""
+        from datetime import timedelta
+        from src.schemas import CallIntelligence, CallOutcome, LeadQuality, PrimaryObjection, CallDirection
+
+        now = datetime.now()
+        
+        c1 = PipelineResponse(
+            success=True, provider_call_id="SEED-001", idempotent_replay=False,
+            intelligence=CallIntelligence(
+                call_summary="Client inquired about enterprise pricing.",
+                call_outcome=CallOutcome.FOLLOW_UP,
+                lead_quality=LeadQuality.HOT,
+                primary_objection=PrimaryObjection.PRICE,
+                customer_intent="Pricing inquiry",
+                next_action="Send proposal",
+                follow_up_at=now + timedelta(days=1),
+                agent_quality_notes="Great tone, slightly rushed.",
+                review_flag=False,
+            ),
+            duration_seconds=145, direction=CallDirection.OUTBOUND, event_timestamp=now - timedelta(hours=2),
+            agent_id="sarah.demo@example.com", matched_lead="Alice Johnson",
+            frappe_call_log_id="CALL-LOG-MOCK1", frappe_task_id="TASK-MOCK1"
+        )
+        
+        c2 = PipelineResponse(
+            success=True, provider_call_id="SEED-002", idempotent_replay=False,
+            intelligence=CallIntelligence(
+                call_summary="Client not interested in our services at this time.",
+                call_outcome=CallOutcome.NOT_INTERESTED,
+                lead_quality=LeadQuality.COLD,
+                primary_objection=PrimaryObjection.TIMING,
+                customer_intent="Just browsing",
+                next_action="None",
+                follow_up_at=None,
+                agent_quality_notes="Agent sounded unenthusiastic.",
+                review_flag=True,
+            ),
+            duration_seconds=65, direction=CallDirection.OUTBOUND, event_timestamp=now - timedelta(hours=5),
+            agent_id="john.demo@example.com", matched_lead="Bob Martinez",
+            frappe_call_log_id="CALL-LOG-MOCK2"
+        )
+        
+        c3 = PipelineResponse(
+            success=True, provider_call_id="SEED-003", idempotent_replay=False,
+            intelligence=CallIntelligence(
+                call_summary="Product demo went well, client wants to move forward.",
+                call_outcome=CallOutcome.INTERESTED,
+                lead_quality=LeadQuality.WARM,
+                primary_objection=PrimaryObjection.COMPETITOR,
+                customer_intent="Demo feedback",
+                next_action="Schedule onboarding",
+                follow_up_at=now - timedelta(hours=1),
+                agent_quality_notes="Perfect pacing and objection handling.",
+                review_flag=False,
+            ),
+            duration_seconds=320, direction=CallDirection.INBOUND, event_timestamp=now - timedelta(days=1),
+            agent_id="sarah.demo@example.com", matched_lead="Carol Smith",
+            frappe_call_log_id="CALL-LOG-MOCK3"
+        )
+        
+        self.idempotency_store.set("SEED-001", c1)
+        self.idempotency_store.set("SEED-002", c2)
+        self.idempotency_store.set("SEED-003", c3)
 
     async def process_call(
         self,
@@ -140,6 +217,10 @@ class CallIntelligencePipeline:
             frappe_call_log_id=call_log_id,
             frappe_task_id=task_id,
             message="Call processed, analyzed, and synchronized with Frappe CRM",
+            duration_seconds=event.duration_seconds,
+            direction=event.direction,
+            event_timestamp=event.event_timestamp or datetime.now(),
+            agent_id=event.agent_id,
         )
 
         self.idempotency_store.set(call_id, response)

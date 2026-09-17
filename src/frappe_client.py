@@ -456,6 +456,52 @@ class FrappeCRMClient:
             logger.error(f"[FrappeCRMClient] Error updating Lead '{lead_id}': {exc}")
             return {"name": lead_id, "error": str(exc)}
 
+    async def get_recent_call_logs(self, limit: int = 50) -> List["PipelineResponse"]:
+        """Fetch recent call logs from Frappe CRM and map to PipelineResponse for dashboard."""
+        from src.schemas import PipelineResponse
+        
+        if self.mock_mode:
+            return []
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                url = f"{self.base_url}/api/resource/CRM Call Log"
+                params = {
+                    "fields": '["name","id","duration","status","start_time","receiver","reference_docname","from","to"]',
+                    "limit_page_length": limit,
+                    "order_by": "start_time desc"
+                }
+                response = await client.get(url, headers=self._get_headers(), params=params)
+                response.raise_for_status()
+                data = response.json().get("data", [])
+                
+                results = []
+                for row in data:
+                    dt = None
+                    if row.get("start_time"):
+                        try:
+                            # Frappe returns format YYYY-MM-DD HH:MM:SS
+                            dt = datetime.strptime(row["start_time"].split(".")[0], "%Y-%m-%d %H:%M:%S")
+                        except Exception:
+                            dt = datetime.now()
+                            
+                    resp = PipelineResponse(
+                        success=(row.get("status") == "Completed"),
+                        provider_call_id=row.get("id") or row.get("name"),
+                        idempotent_replay=False,
+                        frappe_call_log_id=row.get("name"),
+                        duration_seconds=int(row.get("duration") or 0),
+                        event_timestamp=dt,
+                        agent_id=row.get("receiver"),
+                        matched_lead=row.get("reference_docname"),
+                        message="Fetched from Live Frappe CRM"
+                    )
+                    results.append(resp)
+                return results
+        except Exception as exc:
+            logger.error(f"[FrappeCRMClient] Error fetching recent call logs: {exc}")
+            return []
+
 
 def get_frappe_client(settings: Optional[Settings] = None) -> FrappeCRMClient:
     """Factory to retrieve Frappe CRM Client instance."""
