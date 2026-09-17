@@ -122,3 +122,24 @@ def test_populated_analytics():
     # Sort order: descending by timestamp, so call1 (5 mins ago) is before call2 (10 mins ago)
     assert calls[0]["provider_call_id"] == "call-1"
     assert calls[1]["provider_call_id"] == "call-2"
+
+def test_frappe_comment_parsing():
+    from src.frappe_client import FrappeCRMClient
+    from src.schemas import CallOutcome, LeadQuality, PrimaryObjection
+    
+    client = FrappeCRMClient(mock_mode=True)
+    html = """
+    <div><h4>AI Call Intelligence Analysis <span style="color:green;">[Verified]</span></h4><p><b>Summary:</b> Customer was very interested in the product.</p><ul><li><b>Outcome:</b> Follow-up</li><li><b>Lead Quality:</b> Warm</li><li><b>Customer Intent:</b> Buy</li><li><b>Primary Objection:</b> Price</li><li><b>Next Action:</b> Send pricing</li><li><b>Follow-up At:</b> 2026-09-18T10:00:00+00:00</li><li><b>Agent Quality Notes:</b> Good job</li></ul></div>
+    """
+    
+    intel = client._parse_html_comment(html)
+    assert intel.call_summary == "Customer was very interested in the product."
+    assert intel.call_outcome == CallOutcome.FOLLOW_UP
+    assert intel.lead_quality == LeadQuality.WARM
+    assert intel.primary_objection == PrimaryObjection.PRICE
+    assert intel.customer_intent == "Buy"
+    assert intel.next_action == "Send pricing"
+    assert intel.agent_quality_notes == "Good job"
+    assert intel.follow_up_at is not None
+    assert intel.follow_up_at.isoformat() == "2026-09-18T10:00:00+00:00"
+

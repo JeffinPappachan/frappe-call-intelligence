@@ -166,7 +166,7 @@
         /* Dashboard Grid */
         .dashboard-grid {
             display: grid;
-            grid-template-columns: 2fr 1fr;
+            grid-template-columns: 2fr 1fr 1fr;
             gap: 1.5rem;
             margin-bottom: 2rem;
         }
@@ -437,6 +437,12 @@
                     <canvas id="qualityChart"></canvas>
                 </div>
             </div>
+            <div class="glass-panel chart-container">
+                <h3>Call Outcomes</h3>
+                <div class="chart-wrapper">
+                    <canvas id="outcomeChart"></canvas>
+                </div>
+            </div>
         </div>
 
         <!-- Table -->
@@ -478,7 +484,7 @@
 
     <script>
         // Chart Instances
-        let telecallerChart, qualityChart;
+        let telecallerChart, qualityChart, outcomeChart;
         let recentCallsData = [];
 
         // Formatting utilities
@@ -529,6 +535,18 @@
                     cutout: '70%'
                 }
             });
+
+            const ctx3 = document.getElementById('outcomeChart').getContext('2d');
+            outcomeChart = new Chart(ctx3, {
+                type: 'doughnut',
+                data: { labels: [], datasets: [] },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { position: 'bottom' } },
+                    cutout: '70%'
+                }
+            });
         };
 
         const updateCharts = (metrics) => {
@@ -566,6 +584,27 @@
                 }]
             };
             qualityChart.update();
+
+            // Update Outcome Doughnut Chart
+            const outcomes = Object.keys(metrics.call_outcome_distribution || {});
+            const outCounts = Object.values(metrics.call_outcome_distribution || {});
+            const outcomeColors = {
+                'Interested': '#9ece6a',
+                'Not Interested': '#f7768e',
+                'Follow-up': '#e0af68',
+                'Unknown': '#a9b1d6'
+            };
+            const outBgColors = outcomes.map(o => outcomeColors[o] || '#bb9af7');
+
+            outcomeChart.data = {
+                labels: outcomes,
+                datasets: [{
+                    data: outCounts,
+                    backgroundColor: outBgColors,
+                    borderWidth: 0
+                }]
+            };
+            outcomeChart.update();
         };
 
         const fetchMetrics = async () => {

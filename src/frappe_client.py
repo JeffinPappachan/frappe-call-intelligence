@@ -467,7 +467,7 @@ class FrappeCRMClient:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 url = f"{self.base_url}/api/resource/CRM Call Log"
                 params = {
-                    "fields": '["name","id","duration","status","start_time","receiver","reference_docname","from","to"]',
+                    "fields": '["name","id","duration","status","start_time","receiver","caller","owner","reference_docname","from","to"]',
                     "limit_page_length": limit,
                     "order_by": "start_time desc"
                 }
@@ -485,6 +485,9 @@ class FrappeCRMClient:
                         except Exception:
                             dt = datetime.now()
                             
+                    
+                    intel = await self._fetch_and_parse_intelligence(row.get("name"), client)
+                    
                     resp = PipelineResponse(
                         success=(row.get("status") == "Completed"),
                         provider_call_id=row.get("id") or row.get("name"),
@@ -492,8 +495,9 @@ class FrappeCRMClient:
                         frappe_call_log_id=row.get("name"),
                         duration_seconds=int(row.get("duration") or 0),
                         event_timestamp=dt,
-                        agent_id=row.get("receiver"),
+                        agent_id=row.get("owner") or row.get("caller") or row.get("receiver"),
                         matched_lead=row.get("reference_docname"),
+                        intelligence=intel,
                         message="Fetched from Live Frappe CRM"
                     )
                     results.append(resp)
@@ -501,6 +505,91 @@ class FrappeCRMClient:
         except Exception as exc:
             logger.error(f"[FrappeCRMClient] Error fetching recent call logs: {exc}")
             return []
+
+    async def _fetch_and_parse_intelligence(self, call_log_name: str, client: httpx.AsyncClient) -> Optional[CallIntelligence]:
+        """Fetch Timeline Comments for a Call Log and parse out the structured CallIntelligence data."""
+        if not call_log_name:
+            return None
+            
+        try:
+            url = f"{self.base_url}/api/resource/Comment"
+            params = {
+                "filters": f'[["reference_name","=","{call_log_name}"],["reference_doctype","=","CRM Call Log"]]',
+                "fields": '["content"]',
+                "limit_page_length": 5,
+                "order_by": "creation desc"
+            }
+            response = await client.get(url, headers=self._get_headers(), params=params)
+            if response.status_code != 200:
+                return None
+                
+            comments = response.json().get("data", [])
+            for comment in comments:
+                content = comment.get("content", "")
+                if "AI Call Intelligence Analysis" in content:
+                    return self._parse_html_comment(content)
+            return None
+        except Exception as exc:
+            logger.warning(f"[FrappeCRMClient] Failed to fetch intelligence for Call Log {call_log_name}: {exc}")
+            return None
+
+    def _parse_html_comment(self, html: str) -> CallIntelligence:
+        """Parse the HTML comment string back into a CallIntelligence model."""
+        import re
+        from src.schemas import CallOutcome, LeadQuality, PrimaryObjection
+        
+        def extract(label: str) -> str:
+            match = re.search(rf"<li><b>{label}:</b>\s*(.*?)(?:</li>|<br>)", html, re.IGNORECASE | re.DOTALL)
+            return match.group(1).strip() if match else ""
+            
+        def extract_summary() -> str:
+            match = re.search(r"<b>Summary:</b>\s*(.*?)(?:</p>|<br>)", html, re.IGNORECASE | re.DOTALL)
+            return match.group(1).strip() if match else ""
+
+        outcome_str = extract("Outcome")
+        lead_quality_str = extract("Lead Quality")
+        intent_str = extract("Customer Intent")
+        objection_str = extract("Primary Objection")
+        action_str = extract("Next Action")
+        follow_up_str = extract("Follow-up At")
+        notes_str = extract("Agent Quality Notes")
+        summary_str = extract_summary()
+        
+        # Parse Enum fields
+        try:
+            outcome = CallOutcome(outcome_str)
+        except ValueError:
+            outcome = CallOutcome.UNKNOWN
+            
+        try:
+            quality = LeadQuality(lead_quality_str)
+        except ValueError:
+            quality = LeadQuality.UNKNOWN
+            
+        try:
+            objection = PrimaryObjection(objection_str)
+        except ValueError:
+            objection = PrimaryObjection.NONE
+            
+        # Parse follow up date
+        dt = None
+        if follow_up_str and follow_up_str.lower() != "none":
+            try:
+                dt = datetime.fromisoformat(follow_up_str)
+            except ValueError:
+                pass
+                
+        return CallIntelligence(
+            call_summary=summary_str or "Summary extracted from timeline.",
+            call_outcome=outcome,
+            lead_quality=quality,
+            primary_objection=objection,
+            customer_intent=intent_str,
+            next_action=action_str,
+            follow_up_at=dt,
+            agent_quality_notes=notes_str
+        )
+
 
 
 def get_frappe_client(settings: Optional[Settings] = None) -> FrappeCRMClient:
