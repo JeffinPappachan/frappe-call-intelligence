@@ -15,6 +15,12 @@ from src.stt_service import STTService, get_stt_service
 logger = logging.getLogger(__name__)
 
 
+from collections import OrderedDict
+import json
+import sqlite3
+import threading
+import time
+
 class IdempotencyStore(ABC):
     """Abstract store for webhook deduplication and replay caching."""
 
@@ -34,27 +40,186 @@ class IdempotencyStore(ABC):
     def get_all(self) -> List[PipelineResponse]:
         pass
 
+    @abstractmethod
+    def clear(self) -> None:
+        pass
+
 
 class InMemoryIdempotencyStore(IdempotencyStore):
-    """In-memory idempotency cache designed to be easily swapped with SQLite or Redis."""
+    """Thread-safe bounded in-memory idempotency cache with TTL expiration (REL-03).
+    
+    Features:
+    - Bounded capacity with LRU eviction (max_items).
+    - Time-To-Live (TTL) expiration per cached item.
+    - Thread-safe access via RLock.
+    """
 
-    def __init__(self):
-        self._cache: Dict[str, PipelineResponse] = {}
+    def __init__(self, ttl_seconds: Optional[int] = None, max_items: Optional[int] = None):
+        from src.config import get_settings
+        settings = get_settings()
+        self.ttl_seconds = ttl_seconds if ttl_seconds is not None else settings.idempotency_ttl_seconds
+        self.max_items = max_items if max_items is not None else settings.idempotency_max_items
+        # Store tuples: (PipelineResponse, expiry_timestamp_float)
+        self._cache: OrderedDict[str, tuple[PipelineResponse, float]] = OrderedDict()
+        self._lock = threading.RLock()
+
+    def _purge_expired(self, now: Optional[float] = None) -> None:
+        """Internal helper to purge expired entries."""
+        current_time = now if now is not None else time.time()
+        expired_keys = [k for k, (_, exp) in self._cache.items() if current_time >= exp]
+        for k in expired_keys:
+            del self._cache[k]
 
     def has(self, key: str) -> bool:
-        return key in self._cache
+        with self._lock:
+            if key not in self._cache:
+                return False
+            _, expiry = self._cache[key]
+            if time.time() >= expiry:
+                del self._cache[key]
+                return False
+            return True
 
     def get(self, key: str) -> Optional[PipelineResponse]:
-        return self._cache.get(key)
+        with self._lock:
+            if key not in self._cache:
+                return None
+            resp, expiry = self._cache[key]
+            if time.time() >= expiry:
+                del self._cache[key]
+                return None
+            # Move to end to maintain LRU access order
+            self._cache.move_to_end(key)
+            return resp
 
     def set(self, key: str, value: PipelineResponse) -> None:
-        self._cache[key] = value
+        with self._lock:
+            self._purge_expired()
+            # If at max capacity, evict oldest entry (FIFO / least recently inserted/accessed)
+            if key not in self._cache and len(self._cache) >= self.max_items:
+                self._cache.popitem(last=False)
+
+            expiry = time.time() + self.ttl_seconds
+            self._cache[key] = (value, expiry)
+            self._cache.move_to_end(key)
 
     def get_all(self) -> List[PipelineResponse]:
-        return list(self._cache.values())
+        with self._lock:
+            self._purge_expired()
+            return [resp for resp, _ in self._cache.values()]
 
     def clear(self) -> None:
-        self._cache.clear()
+        with self._lock:
+            self._cache.clear()
+
+
+class SQLiteIdempotencyStore(IdempotencyStore):
+    """Local SQLite persistent idempotency store with TTL expiration (REL-03).
+    
+    Provides persistent local disk storage across server restarts while honoring TTL.
+    Note: For multi-worker, horizontally-scaled cloud deployments, Redis is recommended.
+    """
+
+    def __init__(self, db_path: str = "idempotency.db", ttl_seconds: Optional[int] = None, max_items: Optional[int] = None):
+        from src.config import get_settings
+        settings = get_settings()
+        self.db_path = db_path
+        self.ttl_seconds = ttl_seconds if ttl_seconds is not None else settings.idempotency_ttl_seconds
+        self.max_items = max_items if max_items is not None else settings.idempotency_max_items
+        self._lock = threading.RLock()
+        self._init_db()
+
+    def _get_conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_db(self) -> None:
+        with self._lock, self._get_conn() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS idempotency_cache (
+                    key TEXT PRIMARY KEY,
+                    payload TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    expires_at REAL NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_expires_at ON idempotency_cache(expires_at)")
+            conn.commit()
+
+    def _purge_expired(self, conn: sqlite3.Connection) -> None:
+        conn.execute("DELETE FROM idempotency_cache WHERE expires_at <= ?", (time.time(),))
+
+    def has(self, key: str) -> bool:
+        with self._lock, self._get_conn() as conn:
+            self._purge_expired(conn)
+            cur = conn.execute("SELECT 1 FROM idempotency_cache WHERE key = ?", (key,))
+            return cur.fetchone() is not None
+
+    def get(self, key: str) -> Optional[PipelineResponse]:
+        with self._lock, self._get_conn() as conn:
+            self._purge_expired(conn)
+            cur = conn.execute("SELECT payload FROM idempotency_cache WHERE key = ?", (key,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            try:
+                data = json.loads(row["payload"])
+                return PipelineResponse.model_validate(data)
+            except Exception as exc:
+                logger.error(f"[SQLiteIdempotencyStore] Failed to deserialize payload for {key}: {exc}")
+                return None
+
+    def set(self, key: str, value: PipelineResponse) -> None:
+        with self._lock, self._get_conn() as conn:
+            self._purge_expired(conn)
+            # Enforce max items bound: delete oldest entries if at or over max_items
+            cur = conn.execute("SELECT COUNT(*) as cnt FROM idempotency_cache")
+            count = cur.fetchone()["cnt"]
+            if count >= self.max_items:
+                conn.execute(
+                    """
+                    DELETE FROM idempotency_cache WHERE key IN (
+                        SELECT key FROM idempotency_cache ORDER BY created_at ASC LIMIT ?
+                    )
+                    """,
+                    (count - self.max_items + 1,),
+                )
+
+            now = time.time()
+            expires_at = now + self.ttl_seconds
+            payload_json = value.model_dump_json()
+            conn.execute(
+                """
+                INSERT INTO idempotency_cache (key, payload, created_at, expires_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    payload = excluded.payload,
+                    created_at = excluded.created_at,
+                    expires_at = excluded.expires_at
+                """,
+                (key, payload_json, now, expires_at),
+            )
+            conn.commit()
+
+    def get_all(self) -> List[PipelineResponse]:
+        with self._lock, self._get_conn() as conn:
+            self._purge_expired(conn)
+            cur = conn.execute("SELECT payload FROM idempotency_cache ORDER BY created_at DESC")
+            results = []
+            for row in cur.fetchall():
+                try:
+                    results.append(PipelineResponse.model_validate_json(row["payload"]))
+                except Exception:
+                    continue
+            return results
+
+    def clear(self) -> None:
+        with self._lock, self._get_conn() as conn:
+            conn.execute("DELETE FROM idempotency_cache")
+            conn.commit()
 
 
 class CallIntelligencePipeline:
@@ -72,13 +237,28 @@ class CallIntelligencePipeline:
         frappe_client: Optional[FrappeCRMClient] = None,
         idempotency_store: Optional[IdempotencyStore] = None,
     ):
+        from src.config import get_settings
+        settings = get_settings()
+
         self.stt_service = stt_service or get_stt_service()
         self.ai_service = ai_service or get_ai_service()
         self.frappe_client = frappe_client or get_frappe_client()
-        self.idempotency_store = idempotency_store or InMemoryIdempotencyStore()
+        
+        if idempotency_store:
+            self.idempotency_store = idempotency_store
+        elif settings.idempotency_backend == "sqlite":
+            self.idempotency_store = SQLiteIdempotencyStore(
+                db_path=settings.sqlite_db_path,
+                ttl_seconds=settings.idempotency_ttl_seconds,
+                max_items=settings.idempotency_max_items,
+            )
+        else:
+            self.idempotency_store = InMemoryIdempotencyStore(
+                ttl_seconds=settings.idempotency_ttl_seconds,
+                max_items=settings.idempotency_max_items,
+            )
 
-        from src.config import get_settings
-        if get_settings().mock_mode and len(self.idempotency_store.get_all()) == 0:
+        if settings.mock_mode and len(self.idempotency_store.get_all()) == 0:
             self._seed_mock_data()
 
     def _seed_mock_data(self):
@@ -152,29 +332,67 @@ class CallIntelligencePipeline:
         raw_audio: Optional[bytes] = None,
         audio_filename: Optional[str] = None,
     ) -> PipelineResponse:
-        """Process a call event end-to-end with idempotency guarantees."""
+        """Process a call event end-to-end with idempotency guarantees and observability."""
+        from src.observability import metrics, AppError, ErrorClassification, request_id_ctx
+        start_time = time.time()
         call_id = event.provider_call_id
+        req_id = request_id_ctx.get("-")
 
         # 1. Idempotency Check
         if self.idempotency_store.has(call_id):
-            logger.info(f"[Pipeline] Duplicate webhook received for call '{call_id}'. Returning cached result.")
+            logger.info(
+                f"Duplicate webhook received for call '{call_id}'. Returning cached result.",
+                extra={"call_id": call_id, "request_id": req_id, "pipeline_status": "idempotent_replay"},
+            )
+            metrics.increment("idempotent_duplicate_total")
             cached = self.idempotency_store.get(call_id)
             if cached:
-                # Return a copy marked as an idempotent replay
                 replay_response = cached.model_copy()
                 replay_response.idempotent_replay = True
                 replay_response.message = "Call already processed; returned from idempotency cache"
                 return replay_response
 
         # 2. Speech-to-Text Transcription
-        audio_source = raw_audio or event.recording_url or "mock_call.wav"
-        transcript = await self.stt_service.transcribe(audio_source=audio_source, filename=audio_filename)
+        stt_status = "pending"
+        try:
+            audio_source = raw_audio or event.recording_url or "mock_call.wav"
+            transcript = await self.stt_service.transcribe(audio_source=audio_source, filename=audio_filename)
+            stt_status = "success"
+        except Exception as exc:
+            stt_status = "failed"
+            metrics.increment("stt_failures_total")
+            metrics.record_error("stt_error")
+            logger.error(
+                f"STT transcription failed for call '{call_id}': {exc}",
+                extra={"call_id": call_id, "request_id": req_id, "error_class": "stt_error"},
+            )
+            raise AppError(
+                message=f"STT transcription failed: {str(exc)}",
+                error_class=ErrorClassification.STT_ERROR,
+                status_code=502,
+            ) from exc
 
         # 3. LLM Structured Intelligence Analysis
-        intelligence = await self.ai_service.analyze_call(
-            transcript=transcript,
-            metadata={"call_id": call_id, "provider": event.telephony_provider},
-        )
+        llm_status = "pending"
+        try:
+            intelligence = await self.ai_service.analyze_call(
+                transcript=transcript,
+                metadata={"call_id": call_id, "provider": event.telephony_provider},
+            )
+            llm_status = "success"
+        except Exception as exc:
+            llm_status = "failed"
+            metrics.increment("llm_failures_total")
+            metrics.record_error("llm_error")
+            logger.error(
+                f"LLM extraction failed for call '{call_id}': {exc}",
+                extra={"call_id": call_id, "request_id": req_id, "error_class": "llm_error"},
+            )
+            raise AppError(
+                message=f"LLM analysis failed: {str(exc)}",
+                error_class=ErrorClassification.LLM_ERROR,
+                status_code=502,
+            ) from exc
 
         # 4. Match Lead in Frappe CRM
         target_phone = event.to_number if event.direction == CallDirection.OUTBOUND else event.from_number
@@ -183,30 +401,71 @@ class CallIntelligencePipeline:
         lead_agent = lead.get("assigned_to") if lead else event.agent_id
 
         # 5. Create Frappe CRM Call Log
-        call_log = await self.frappe_client.create_call_log(
-            call_event=event,
-            transcript=transcript,
-            intelligence=intelligence,
-            lead_id=lead_id,
-        )
-        call_log_id = call_log.get("name", "CALL-LOG-UNKNOWN")
+        crm_status = "pending"
+        try:
+            call_log = await self.frappe_client.create_call_log(
+                call_event=event,
+                transcript=transcript,
+                intelligence=intelligence,
+                lead_id=lead_id,
+            )
+            call_log_id = call_log.get("name", "CALL-LOG-UNKNOWN")
+            crm_status = "success"
+        except Exception as exc:
+            crm_status = "failed"
+            metrics.increment("crm_failures_total")
+            metrics.record_error("crm_error")
+            logger.error(
+                f"CRM Call Log creation failed for call '{call_id}': {exc}",
+                extra={"call_id": call_id, "lead_id": lead_id, "request_id": req_id, "error_class": "crm_error"},
+            )
+            raise AppError(
+                message=f"CRM Call Log creation failed: {str(exc)}",
+                error_class=ErrorClassification.CRM_ERROR,
+                status_code=502,
+            ) from exc
 
         # 6. Auto-create Follow-up Task in Frappe CRM if requested
         task_id = None
-        task = await self.frappe_client.create_followup_task(
-            call_log_id=call_log_id,
-            lead_id=lead_id,
-            intelligence=intelligence,
-            assigned_to=lead_agent,
-        )
-        if task:
-            task_id = task.get("name")
+        task_status = "skipped"
+        if intelligence.follow_up_required:
+            try:
+                task = await self.frappe_client.create_followup_task(
+                    call_log_id=call_log_id,
+                    lead_id=lead_id,
+                    intelligence=intelligence,
+                    assigned_to=lead_agent,
+                )
+                if task and task.get("name") is not None:
+                    task_id = str(task.get("name"))
+                    task_status = "success"
+                else:
+                    task_status = "failed"
+                    metrics.increment("followup_task_failures_total")
+            except Exception as exc:
+                task_status = "failed"
+                metrics.increment("followup_task_failures_total")
+                logger.error(
+                    f"Unexpected error during task creation for call '{call_id}': {exc}",
+                    extra={"call_id": call_id, "lead_id": lead_id, "request_id": req_id},
+                )
+                task_id = None
 
         # 7. Update Lead stage & quality
         if lead_id:
-            await self.frappe_client.update_lead_status(lead_id=lead_id, intelligence=intelligence)
+            try:
+                await self.frappe_client.update_lead_status(lead_id=lead_id, intelligence=intelligence)
+            except Exception as exc:
+                logger.warning(
+                    f"Non-fatal error updating Lead stage for '{lead_id}': {exc}",
+                    extra={"call_id": call_id, "lead_id": lead_id, "request_id": req_id},
+                )
 
         # 8. Assemble response and save to Idempotency Store
+        duration_ms = round((time.time() - start_time) * 1000, 2)
+        metrics.record_duration(duration_ms)
+        metrics.increment("pipeline_success_total")
+
         response = PipelineResponse(
             success=True,
             provider_call_id=call_id,
@@ -224,6 +483,22 @@ class CallIntelligencePipeline:
         )
 
         self.idempotency_store.set(call_id, response)
+
+        logger.info(
+            f"Successfully processed call '{call_id}' in {duration_ms}ms",
+            extra={
+                "call_id": call_id,
+                "lead_id": lead_id,
+                "frappe_call_log_id": call_log_id,
+                "frappe_task_id": task_id,
+                "duration_ms": duration_ms,
+                "stt_status": stt_status,
+                "llm_status": llm_status,
+                "crm_status": crm_status,
+                "task_status": task_status,
+                "pipeline_status": "success",
+            },
+        )
         return response
 
 

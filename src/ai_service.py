@@ -65,16 +65,64 @@ class MockAIService(AIService):
 
 
 class RealAIService(AIService):
-    """Real LLM provider placeholder (Groq / OpenAI / Gemini)."""
+    """Real LLM provider using OpenAI GPT via httpx."""
 
     def __init__(self, provider: str, api_key: str):
         self.provider = provider
         self.api_key = api_key
 
     async def analyze_call(self, transcript: str, metadata: Optional[dict] = None) -> CallIntelligence:
-        raise NotImplementedError(
-            f"Real AI provider '{self.provider}' configured but client integration pending API key verification. Use MOCK_MODE=true for testing."
+        import httpx
+        import json
+
+        if not self.api_key:
+            raise ValueError("AI API key is not configured.")
+
+        system_prompt = (
+            "You are an expert sales manager and AI call analyzer. Analyze the provided telecaller-customer transcript "
+            "and extract structured business intelligence. "
+            "You MUST output ONLY valid JSON matching the exact schema requirements without any markdown wrappers."
         )
+
+        url = "https://api.openai.com/v1/chat/completions"
+        model_name = "gpt-4o-mini"
+        
+        if self.provider == "groq":
+            url = "https://api.groq.com/openai/v1/chat/completions"
+            model_name = "openai/gpt-oss-20b"
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        schema_info = CallIntelligence.model_json_schema()
+        
+        data = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": system_prompt + f"\n\nJSON Schema:\n{json.dumps(schema_info)}"},
+                {"role": "user", "content": f"Transcript:\n{transcript}"}
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.1
+        }
+
+        timeout = get_settings().ai_timeout_seconds
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(url, headers=headers, json=data)
+                response.raise_for_status()
+                
+                content = response.json()["choices"][0]["message"]["content"]
+                return CallIntelligence.model_validate_json(content)
+                
+        except httpx.HTTPStatusError as exc:
+            logger.error(f"[RealAIService] HTTP Error: {exc.response.text}")
+            raise ValueError(f"Groq API Error: {exc.response.text}") from exc
+        except Exception as exc:
+            logger.error(f"[RealAIService] Analysis failed: {exc}")
+            raise
 
 
 def get_ai_service(settings: Optional[Settings] = None) -> AIService:

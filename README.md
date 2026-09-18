@@ -114,13 +114,14 @@ Key environment variables in `.env`:
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `MOCK_MODE` | `true` | When `true`, runs offline without external API keys |
-| `FRAPPE_BASE_URL` | `https://crm-chm-lly.nvi.frappe.cloud` | Target Frappe Cloud CRM base URL |
-| `FRAPPE_API_KEY` | `""` | Frappe User API Key (from `/desk` $\to$ User $\to$ API Access) |
-| `FRAPPE_API_SECRET` | `""` | Frappe User API Secret |
-| `AI_PROVIDER` | `mock` | `mock`, `groq`, `openai`, or `gemini` |
-| `AI_API_KEY` | `""` | API key for LLM structured extraction |
+| `FRAPPE_BASE_URL` | `https://crm-chm-lly.nvi.frappe.cloud` | Target Frappe Cloud C| `AI_API_KEY` | `""` | API key for LLM structured extraction |
 | `STT_PROVIDER` | `mock` | `mock`, `groq`, `openai`, or `gemini` |
 | `STT_API_KEY` | `""` | API key for Speech-to-Text Whisper transcription |
+| `ALLOWED_ORIGINS` | `["http://localhost:8000", ...]` | Explicit CORS allowed origins list |
+| `STORE_TRANSCRIPT_IN_CRM` | `truncated` | `full`, `truncated` (500 char cap), or `none` |
+| `ADMIN_API_TOKEN` | `""` | Optional admin token to protect `/api/models` |
+| `IDEMPOTENCY_TTL_SECONDS` | `86400` | Idempotency record expiration time (24h default) |
+| `IDEMPOTENCY_MAX_ITEMS` | `1000` | Maximum capacity for in-memory idempotency cache (LRU) |
 
 ---
 
@@ -137,10 +138,11 @@ uvicorn src.server:app --reload --host 0.0.0.0 --port 8000
 - Health Check: [http://localhost:8000/health](http://localhost:8000/health)
 
 ### API Endpoints
-- `POST /api/v1/telephony/webhook`: Core entrypoint for Exotel/Twilio call completion webhooks.
-- `POST /api/v1/telephony/process-audio`: Direct audio upload for testing & transcription via multipart form-data.
+- `POST /api/v1/telephony/webhook`: Core entrypoint for Exotel/Twilio call completion webhooks (Idempotent deduplication guard).
+- `POST /api/v1/telephony/process-audio`: Direct audio upload (WAV, MP3, M4A) with 25MB streaming cap, MIME validation, and empty-file protection.
 - `GET /api/v1/dashboard/metrics`: Analytics endpoint returning aggregated KPIs, telecaller metrics, and follow-ups.
 - `GET /api/v1/dashboard/calls`: Returns feed of recent calls processed by the pipeline.
+- `GET /api/models`: Public safe model metadata endpoint protected by optional `X-Admin-Token`.
 
 ### Test the Webhook with Sample Data
 
@@ -159,16 +161,18 @@ curl.exe -X POST http://localhost:8000/api/v1/telephony/webhook `
 Run the automated test suite with pytest:
 
 ```powershell
-pytest -v
+.\.venv\Scripts\python.exe -m pytest -v
 ```
 
 Tests cover:
 - Pydantic schema validation & enum constraints
 - Webhook payload validation & rejection of malformed inputs
+- Audio upload security (empty file rejection, 25MB limit, MIME & extension checks)
 - STT transcription behavior (English & Malayalam)
 - LLM structured analysis logic
-- Idempotency guard and duplicate webhook suppression
-- FastAPI HTTP endpoint contracts (`/health`, `/webhook`, `/process-audio`)
+- Idempotency guard, TTL expiration, capacity bounding, and duplicate webhook suppression
+- Frappe CRM client error handling (raise_for_status validation on comments, non-fatal task failure)
+- FastAPI HTTP endpoint contracts (`/health`, `/webhook`, `/process-audio`, `/api/models`, `/dashboard`)
 
 ---
 
@@ -193,13 +197,35 @@ The pipeline will now lookup live leads, create actual CRM Call Logs, update Lea
 
 ---
 
-## 9. Current Foundation & Next Implementation Steps
+## 9. Current Status & Verification
 
 - [x] Phase 1: Foundation scaffolded (schemas, STT/AI interfaces, Frappe client, pipeline, FastAPI server).
 - [x] Phase 1: Webhook idempotency and deduplication guard implemented.
 - [x] Phase 1: Connect live Frappe Cloud credentials and verify live REST write-back.
 - [x] Phase 2: Implement Manager Dashboard UI (http://localhost:8000/dashboard).
 - [x] Phase 2: Implement Backend Analytics (`/metrics`, `/calls`).
-- [x] Automated test suite passing (18 tests).
-- [ ] Phase 3: Add external production LLM & STT API providers.
-- [ ] Phase 3: Final demonstration recording.
+- [x] Phase 4: Full automated test suite passing (20 baseline regression tests).
+- [x] Phase 5.1: Production Hardening — Security & Reliability (SEC-01 through SEC-05, REL-01).
+- [x] Phase 5.2: Production Hardening — Reliability & Data Integrity (SEC-06 Audio Validation, REL-02 Frappe Comment Status Checks, REL-03 Idempotency TTL & Bounding & SQLite Store).
+- [x] Phase 5.3: Observability & Production Readiness (Structured JSON Logging, Request Correlation ID, `/ready` and `/metrics` Endpoints, AppError Classification, Production Docker & Compose).
+- [x] Automated test suite passing (52 passing tests, 0 failures).
+
+---
+
+## 10. Observability & Monitoring
+
+### Endpoints
+- **Liveness (`GET /health`)**: Returns `200 OK` and active environment metadata when process is alive.
+- **Readiness (`GET /ready`)**: Returns `200 OK` when dependencies (CRM credentials, AI/STT keys, storage) are valid. Returns `503 Service Unavailable` with structured diagnostic reasons if unconfigured.
+- **Application Metrics (`GET /metrics`)**: Exposes structured operational counters, processing durations, and failure classification metrics without exposing PII or unbounded labels.
+
+### Request Correlation
+Every request accepts or generates a validated `X-Request-ID` (`req_<hex16>`). The correlation ID propagates through async contexts and is returned in HTTP response headers and structured JSON logs.
+
+### Production Deployment & Idempotency Store
+- **Single-Worker In-Memory (`IDEMPOTENCY_BACKEND=memory`)**: High-speed, TTL-expiring bounded LRU cache for development or single-worker deployments.
+- **Single-Instance SQLite (`IDEMPOTENCY_BACKEND=sqlite`)**: Persistent, file-backed idempotency surviving process restarts.
+- **Containerized Run**:
+  ```powershell
+  docker-compose up -d --build
+  ```

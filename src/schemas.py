@@ -8,6 +8,10 @@ class CallOutcome(str, Enum):
     INTERESTED = "Interested"
     FOLLOW_UP = "Follow-up"
     NOT_INTERESTED = "Not Interested"
+    CONVERTED = "Converted"
+    CALLBACK_REQUESTED = "Callback Requested"
+    NO_RESPONSE = "No Response"
+    INVALID = "Invalid"
     NO_ANSWER = "No Answer"
     OTHER = "Other"
 
@@ -16,6 +20,7 @@ class LeadQuality(str, Enum):
     HOT = "Hot"
     WARM = "Warm"
     COLD = "Cold"
+    UNKNOWN = "Unknown"
 
 
 class PrimaryObjection(str, Enum):
@@ -85,11 +90,22 @@ class CallIntelligence(BaseModel):
         description="Main customer objection (Price / Timing / Competitor / No need / Other / None)",
     )
     customer_intent: str = Field(..., description="What the customer was trying to achieve or inquire about")
+    key_points: List[str] = Field(default_factory=list, description="Key discussion points")
+    
+    # Existing compatible fields
     next_action: str = Field(..., description="Concrete next sales/operational action")
     follow_up_at: Optional[datetime] = Field(
         default=None,
         description="Validated ISO date and time for follow-up, or null if not applicable",
     )
+    
+    # New Phase 3 AI requested fields
+    follow_up_required: bool = Field(default=False, description="Is a follow up required?")
+    follow_up_date: Optional[datetime] = Field(default=None, description="Follow up date if explicitly available")
+    follow_up_notes: Optional[str] = Field(default=None, description="Notes for the follow up")
+    objections: List[str] = Field(default_factory=list, description="List of all objections raised")
+    recommended_action: Optional[str] = Field(default=None, description="Recommended next action")
+    
     agent_quality_notes: str = Field(
         ...,
         description="Observations regarding telecaller adherence, greeting, pacing, and tone",

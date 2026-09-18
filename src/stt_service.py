@@ -45,17 +45,57 @@ class MockSTTService(STTService):
 
 
 class RealSTTService(STTService):
-    """Real STT provider placeholder (Groq / OpenAI Whisper / Gemini)."""
+    """Real STT provider using OpenAI Whisper API."""
 
     def __init__(self, provider: str, api_key: str):
         self.provider = provider
         self.api_key = api_key
 
     async def transcribe(self, audio_source: str | bytes, filename: Optional[str] = None) -> str:
-        # Will be connected to groq / openai client in next phase when credentials are provided
-        raise NotImplementedError(
-            f"Real STT provider '{self.provider}' configured but client integration pending API key verification. Use MOCK_MODE=true for testing."
-        )
+        import httpx
+        import os
+
+        if not self.api_key:
+            raise ValueError("STT API key is not configured.")
+
+        # Determine if we have a file path or raw bytes
+        if isinstance(audio_source, str):
+            if not os.path.exists(audio_source):
+                raise FileNotFoundError(f"Audio file not found: {audio_source}")
+            with open(audio_source, "rb") as f:
+                file_bytes = f.read()
+            name = filename or os.path.basename(audio_source)
+        else:
+            file_bytes = audio_source
+            name = filename or "audio.wav"
+
+        url = "https://api.openai.com/v1/audio/transcriptions"
+        model_name = "whisper-1"
+        
+        if self.provider == "groq":
+            url = "https://api.groq.com/openai/v1/audio/transcriptions"
+            model_name = "whisper-large-v3"
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}"
+        }
+        
+        files = {
+            "file": (name, file_bytes, "audio/mpeg"),
+        }
+        data = {
+            "model": model_name,
+        }
+
+        timeout = get_settings().stt_timeout_seconds
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(url, headers=headers, files=files, data=data)
+                response.raise_for_status()
+                return response.json().get("text", "")
+        except Exception as exc:
+            logger.error(f"[RealSTTService] Transcription failed: {exc}")
+            raise
 
 
 def get_stt_service(settings: Optional[Settings] = None) -> STTService:

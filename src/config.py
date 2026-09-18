@@ -36,6 +36,32 @@ class Settings(BaseSettings):
     # Local Audio Storage
     audio_storage_dir: str = "./samples"
 
+    # Security & Privacy Settings
+    allowed_origins: list[str] = [
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://localhost:3000",
+    ]
+    store_transcript_in_crm: Literal["full", "truncated", "none"] = "truncated"
+    admin_api_token: str = ""
+
+    # Reliability & Idempotency Store
+    idempotency_backend: Literal["memory", "sqlite"] = "memory"
+    sqlite_db_path: str = "idempotency.db"
+    idempotency_ttl_seconds: int = 86400  # 24 hours
+    idempotency_max_items: int = 1000
+
+    # Observability & Logging Settings
+    log_level: str = "INFO"
+    log_format: Literal["json", "text"] = "json"
+    metrics_enabled: bool = True
+
+    # Upstream Timeouts (Seconds)
+    request_timeout_seconds: float = 60.0
+    stt_timeout_seconds: float = 60.0
+    ai_timeout_seconds: float = 45.0
+    frappe_timeout_seconds: float = 15.0
+
 
 @lru_cache
 def get_settings() -> Settings:

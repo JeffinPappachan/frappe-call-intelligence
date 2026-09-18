@@ -3,7 +3,7 @@ import logging
 import os
 import uuid
 from typing import Optional
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, status
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, status
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,15 +18,23 @@ from src.schemas import (
     TelephonyWebhookPayload,
     DashboardMetricsResponse,
     DashboardCallFeedResponse,
+    CallIntelligence,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+import json
+import re
+from fastapi import Request, Response
+from src.observability import (
+    setup_structured_logging,
+    request_id_ctx,
+    metrics,
+    AppError,
+    ErrorClassification,
 )
-logger = logging.getLogger("ai_call_intelligence")
 
 settings = get_settings()
+setup_structured_logging(log_level=settings.log_level, log_format=settings.log_format)
+logger = logging.getLogger("ai_call_intelligence")
 
 app = FastAPI(
     title="AI Call Intelligence with Frappe CRM",
@@ -34,14 +42,36 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# Enable CORS for local testing / dashboard preview
+# Enable CORS with explicit origins from settings
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def request_correlation_middleware(request: Request, call_next):
+    """Middleware ensuring every request has a validated Request ID propagated via contextvars and headers."""
+    incoming_id = request.headers.get("X-Request-ID")
+    # Validate client-supplied ID: must be alphanumeric/dashes and length <= 64
+    if incoming_id and re.match(r"^[a-zA-Z0-9_\-]{1,64}$", incoming_id):
+        req_id = incoming_id
+    else:
+        req_id = f"req_{uuid.uuid4().hex[:16]}"
+
+    token = request_id_ctx.set(req_id)
+    metrics.increment("total_requests")
+
+    try:
+        response: Response = await call_next(request)
+        response.headers["X-Request-ID"] = req_id
+        return response
+    finally:
+        request_id_ctx.reset(token)
+
 
 # Mount static files
 static_dir = os.path.join(os.path.dirname(__file__), "static")
@@ -61,7 +91,7 @@ async def serve_dashboard():
 
 @app.get("/health", tags=["Monitoring"])
 async def health_check():
-    """Health check endpoint exposing environment and service operational modes."""
+    """Health check endpoint exposing application liveness and non-sensitive operational modes."""
     return {
         "status": "healthy",
         "mock_mode": settings.mock_mode,
@@ -72,6 +102,75 @@ async def health_check():
     }
 
 
+@app.get("/ready", tags=["Monitoring"])
+async def readiness_check():
+    """Readiness check verifying that application dependencies and configurations are operational."""
+    current_settings = get_settings()
+    checks = {
+        "crm_configured": False,
+        "ai_configured": False,
+        "stt_configured": False,
+        "storage_ready": False,
+    }
+    is_ready = True
+    reasons = []
+
+    # 1. CRM configuration check
+    if current_settings.mock_mode or (current_settings.frappe_api_key and current_settings.frappe_api_secret and current_settings.frappe_base_url):
+        checks["crm_configured"] = True
+    else:
+        is_ready = False
+        reasons.append("Frappe CRM API credentials missing in live mode")
+
+    # 2. AI provider configuration check
+    if current_settings.mock_mode or current_settings.ai_provider == "mock" or (current_settings.ai_api_key and current_settings.ai_provider in ("groq", "openai", "gemini")):
+        checks["ai_configured"] = True
+    else:
+        is_ready = False
+        reasons.append(f"AI provider '{current_settings.ai_provider}' lacks configured API key")
+
+    # 3. STT provider configuration check
+    if current_settings.mock_mode or current_settings.stt_provider == "mock" or (current_settings.stt_api_key and current_settings.stt_provider in ("groq", "openai", "gemini")):
+        checks["stt_configured"] = True
+    else:
+        is_ready = False
+        reasons.append(f"STT provider '{current_settings.stt_provider}' lacks configured API key")
+
+    # 4. Storage / Idempotency check
+    if current_settings.idempotency_backend == "sqlite":
+        try:
+            import sqlite3
+            with sqlite3.connect(current_settings.sqlite_db_path) as conn:
+                conn.execute("SELECT 1 FROM idempotency_cache LIMIT 1")
+            checks["storage_ready"] = True
+        except Exception as exc:
+            is_ready = False
+            reasons.append(f"SQLite idempotency database error: {str(exc)}")
+    else:
+        checks["storage_ready"] = True
+
+    status_code = status.HTTP_200_OK if is_ready else status.HTTP_503_SERVICE_UNAVAILABLE
+    return Response(
+        content=json.dumps({
+            "status": "ready" if is_ready else "not_ready",
+            "checks": checks,
+            "reasons": reasons if not is_ready else [],
+            "mock_mode": current_settings.mock_mode,
+            "app_env": current_settings.app_env,
+        }),
+        status_code=status_code,
+        media_type="application/json",
+    )
+
+
+@app.get("/metrics", tags=["Monitoring"])
+async def get_metrics():
+    """Operational metrics endpoint tracking request counts, durations, and error classifications."""
+    if not settings.metrics_enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Metrics collection disabled")
+    return metrics.get_metrics()
+
+
 @app.post(
     "/api/v1/telephony/webhook",
     response_model=PipelineResponse,
@@ -80,24 +179,69 @@ async def health_check():
 )
 async def telephony_webhook(payload: TelephonyWebhookPayload):
     """Ingest telephony webhook event (Exotel / Twilio schema) and trigger the AI pipeline."""
-    logger.info(f"Received webhook for call '{payload.provider_call_id}' from {payload.from_number} to {payload.to_number}")
+    req_id = request_id_ctx.get("-")
+    logger.info(
+        f"Received webhook for call '{payload.provider_call_id}'",
+        extra={"call_id": payload.provider_call_id, "request_id": req_id},
+    )
     
     if payload.provider_call_id.startswith("MOCK-") and not settings.mock_mode:
+        metrics.record_error("validation_error")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot run mock simulations in live MOCK_MODE=false environment to avoid polluting live CRM."
+            detail="Cannot run mock simulations in live MOCK_MODE=false environment to avoid polluting live CRM.",
         )
 
     try:
         pipeline = get_pipeline()
         result = await pipeline.process_call(event=payload)
         return result
+    except AppError as app_err:
+        metrics.increment("pipeline_failed_total")
+        metrics.record_error(app_err.error_class.value)
+        logger.error(
+            f"AppError processing webhook call '{payload.provider_call_id}': {app_err.message}",
+            extra={"call_id": payload.provider_call_id, "request_id": req_id, "error_class": app_err.error_class.value},
+        )
+        raise HTTPException(
+            status_code=app_err.status_code,
+            detail=app_err.message,
+        )
+    except HTTPException:
+        metrics.increment("pipeline_failed_total")
+        raise
     except Exception as exc:
-        logger.error(f"Error processing webhook call '{payload.provider_call_id}': {exc}", exc_info=True)
+        metrics.increment("pipeline_failed_total")
+        metrics.record_error("unexpected_error")
+        logger.error(
+            f"Unexpected error processing webhook call '{payload.provider_call_id}': {exc}",
+            extra={"call_id": payload.provider_call_id, "request_id": req_id, "error_class": "unexpected_error"},
+            exc_info=True,
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Pipeline processing failed: {str(exc)}",
         )
+
+
+# Audio upload security constants (SEC-06)
+MAX_AUDIO_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB (Groq Whisper limit)
+ALLOWED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".ogg", ".webm", ".flac"}
+ALLOWED_AUDIO_MIME_TYPES = {
+    "audio/wav",
+    "audio/x-wav",
+    "audio/wave",
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/m4a",
+    "audio/x-m4a",
+    "audio/mp4",
+    "audio/ogg",
+    "audio/webm",
+    "audio/flac",
+    "audio/x-flac",
+    "application/octet-stream",  # Sometimes supplied by CLI curl/browsers for raw audio
+}
 
 
 @app.post(
@@ -109,21 +253,79 @@ async def telephony_webhook(payload: TelephonyWebhookPayload):
 async def process_audio(
     file: UploadFile = File(..., description="Audio recording file (WAV, MP3, M4A)"),
     lead_phone: str = Form(..., description="Lead phone number for CRM linking"),
-    agent_id: Optional[str] = Form(default="agent@example.com"),
+    agent_id: Optional[str] = Form(default="jeffinpappachan110@gmail.com"),
     direction: Optional[CallDirection] = Form(default=CallDirection.OUTBOUND),
     duration_seconds: Optional[int] = Form(default=60),
     provider_call_id: Optional[str] = Form(default=None),
 ):
-    """Accept an uploaded audio recording and run speech-to-text, LLM extraction, and CRM sync."""
+    """Accept an uploaded audio recording and run speech-to-text, LLM extraction, and CRM sync.
+    
+    Enforces maximum 25 MB file size, MIME type and extension validation, and rejects empty files (SEC-06).
+    """
     call_id = provider_call_id or f"manual_{uuid.uuid4().hex[:12]}"
-    logger.info(f"Processing uploaded audio '{file.filename}' for call ID '{call_id}', lead phone: {lead_phone}")
+    filename = file.filename or "audio.wav"
+    ext = os.path.splitext(filename)[1].lower()
+    req_id = request_id_ctx.get("-")
+
+    # 1. Extension validation
+    if ext not in ALLOWED_AUDIO_EXTENSIONS:
+        metrics.increment("audio_upload_validation_failures_total")
+        metrics.record_error("validation_error")
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=f"Unsupported file extension '{ext}'. Allowed extensions: {', '.join(sorted(ALLOWED_AUDIO_EXTENSIONS))}",
+        )
+
+    # 2. Content-Type validation
+    content_type = (file.content_type or "").lower().split(";")[0].strip()
+    if content_type and content_type not in ALLOWED_AUDIO_MIME_TYPES:
+        metrics.increment("audio_upload_validation_failures_total")
+        metrics.record_error("validation_error")
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=f"Unsupported media type '{file.content_type}'. Allowed MIME types: audio/wav, audio/mpeg, audio/mp4, audio/m4a, audio/ogg, audio/webm, audio/flac",
+        )
+
+    logger.info(
+        f"Processing uploaded audio '{filename}'",
+        extra={"call_id": call_id, "request_id": req_id},
+    )
 
     try:
-        audio_bytes = await file.read()
+        # 3. Bounded chunked streaming read to avoid unlimited memory usage
+        chunks: list[bytes] = []
+        total_read = 0
+        chunk_size = 1024 * 1024  # 1 MB chunk
+
+        while True:
+            chunk = await file.read(chunk_size)
+            if not chunk:
+                break
+            total_read += len(chunk)
+            if total_read > MAX_AUDIO_UPLOAD_BYTES:
+                metrics.increment("audio_upload_validation_failures_total")
+                metrics.record_error("validation_error")
+                raise HTTPException(
+                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                    detail=f"File exceeds maximum upload size of {MAX_AUDIO_UPLOAD_BYTES // (1024 * 1024)} MB.",
+                )
+            chunks.append(chunk)
+
+        # 4. Reject empty files
+        if total_read == 0:
+            metrics.increment("audio_upload_validation_failures_total")
+            metrics.record_error("validation_error")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Empty audio file uploaded. File size must be greater than 0 bytes.",
+            )
+
+        audio_bytes = b"".join(chunks)
+
         event = TelephonyWebhookPayload(
             provider_call_id=call_id,
             telephony_provider="manual_upload",
-            from_number=agent_id or "Agent",
+            from_number="+910000000000",
             to_number=lead_phone,
             direction=direction or CallDirection.OUTBOUND,
             call_status=CallStatus.COMPLETED,
@@ -137,11 +339,30 @@ async def process_audio(
         result = await pipeline.process_call(
             event=event,
             raw_audio=audio_bytes,
-            audio_filename=file.filename,
+            audio_filename=filename,
         )
         return result
+    except AppError as app_err:
+        metrics.increment("pipeline_failed_total")
+        metrics.record_error(app_err.error_class.value)
+        logger.error(
+            f"AppError processing audio upload '{filename}': {app_err.message}",
+            extra={"call_id": call_id, "request_id": req_id, "error_class": app_err.error_class.value},
+        )
+        raise HTTPException(
+            status_code=app_err.status_code,
+            detail=app_err.message,
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
-        logger.error(f"Error processing audio upload '{file.filename}': {exc}", exc_info=True)
+        metrics.increment("pipeline_failed_total")
+        metrics.record_error("unexpected_error")
+        logger.error(
+            f"Error processing audio upload '{filename}': {exc}",
+            extra={"call_id": call_id, "request_id": req_id, "error_class": "unexpected_error"},
+            exc_info=True,
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Audio processing failed: {str(exc)}",
@@ -240,3 +461,81 @@ async def get_dashboard_calls():
     )
     return DashboardCallFeedResponse(calls=calls)
 
+
+@app.get(
+    "/api/v1/dashboard/calls/{call_id}/intelligence",
+    response_model=CallIntelligence,
+    tags=["Analytics"],
+)
+async def get_call_intelligence(call_id: str):
+    """Retrieve detailed AI analysis for a specific call."""
+    if not settings.mock_mode:
+        frappe = get_frappe_client()
+        import httpx
+        async with httpx.AsyncClient() as client:
+            intelligence = await frappe._fetch_and_parse_intelligence(call_id, client)
+            if not intelligence:
+                raise HTTPException(status_code=404, detail="Intelligence not found for this call")
+            return intelligence
+    else:
+        pipeline = get_pipeline()
+        cached = pipeline.idempotency_store.get(call_id)
+        if not cached or not cached.intelligence:
+            raise HTTPException(status_code=404, detail="Intelligence not found for this call")
+        return cached.intelligence
+
+
+@app.get("/api/models", tags=["Configuration"], summary="List Safe Supported AI Models")
+async def get_groq_models(x_admin_token: Optional[str] = Header(None, alias="X-Admin-Token")):
+    """List available AI models with safe public metadata only.
+
+    Secrets, API tokens, and internal provider headers are never returned.
+    If ADMIN_API_TOKEN is set in configuration, valid X-Admin-Token is required.
+    """
+    curr_settings = get_settings()
+    if curr_settings.admin_api_token and x_admin_token != curr_settings.admin_api_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: invalid or missing admin token",
+        )
+
+    # In mock mode or when no external key is configured, return safe static list
+    if curr_settings.mock_mode or not curr_settings.ai_api_key or curr_settings.ai_provider != "groq":
+        return {
+            "object": "list",
+            "data": [
+                {"id": "openai/gpt-oss-20b", "owned_by": "groq", "active": True},
+                {"id": "llama-3.3-70b-versatile", "owned_by": "groq", "active": True},
+                {"id": "whisper-large-v3", "owned_by": "groq", "active": True},
+            ],
+        }
+
+    import httpx
+    url = "https://api.groq.com/openai/v1/models"
+    headers = {"Authorization": f"Bearer {curr_settings.ai_api_key}"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.get(url, headers=headers)
+            if res.status_code != 200:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="Upstream model service unavailable",
+                )
+            raw_data = res.json()
+    except httpx.RequestError as exc:
+        logger.error(f"Failed to fetch upstream models: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Error communicating with upstream AI model provider",
+        )
+
+    # SEC-01: Filter strictly to safe fields; never expose headers or raw payload
+    safe_models = []
+    for model in raw_data.get("data", []):
+        safe_models.append({
+            "id": model.get("id"),
+            "owned_by": model.get("owned_by"),
+            "active": model.get("active", True),
+        })
+
+    return {"object": "list", "data": safe_models}

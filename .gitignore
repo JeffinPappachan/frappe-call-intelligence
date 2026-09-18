@@ -43,3 +43,10 @@ htmlcov/
 *.log
 scratch/
 temp_audio/
+*.db
+*.sqlite
+*.sqlite3
+
+# Local diagnostic and inspection scripts
+check_log*.py
+inspect_*.py

@@ -270,8 +270,13 @@ class FrappeCRMClient:
 
         async with httpx.AsyncClient(timeout=15.0) as client:
             url = f"{self.base_url}/api/resource/CRM Call Log"
-            response = await client.post(url, headers=self._get_headers(), json=log_payload)
-            response.raise_for_status()
+            try:
+                response = await client.post(url, headers=self._get_headers(), json=log_payload)
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                logger.error(f"[FrappeCRMClient] CRM Call Log creation failed: {exc.response.text}")
+                raise ValueError(f"Frappe Validation Error: {exc.response.text}") from exc
+                
             created_log = response.json().get("data", {})
             created_log_name = created_log.get("name")
             logger.info(f"[FrappeCRMClient] Successfully created live CRM Call Log: {created_log_name}")
@@ -316,32 +321,61 @@ class FrappeCRMClient:
             f"<li><b>Outcome:</b> {intelligence.call_outcome.value}</li>"
             f"<li><b>Lead Quality:</b> {intelligence.lead_quality.value}</li>"
             f"<li><b>Customer Intent:</b> {intelligence.customer_intent}</li>"
-            f"<li><b>Primary Objection:</b> {intelligence.primary_objection.value}</li>"
+            f"<li><b>Primary Objection:</b> {intelligence.primary_objection.value if hasattr(intelligence, 'primary_objection') else 'None'}</li>"
+            f"<li><b>Objections:</b> {', '.join(intelligence.objections) if intelligence.objections else 'None'}</li>"
             f"<li><b>Next Action:</b> {intelligence.next_action}</li>"
+            f"<li><b>Recommended Action:</b> {intelligence.recommended_action or 'None'}</li>"
+            f"<li><b>Follow-up Required:</b> {intelligence.follow_up_required}</li>"
             f"<li><b>Follow-up At:</b> {intelligence.follow_up_at.isoformat() if intelligence.follow_up_at else 'None'}</li>"
+            f"<li><b>Follow-up Date:</b> {intelligence.follow_up_date.isoformat() if intelligence.follow_up_date else 'None'}</li>"
+            f"<li><b>Follow-up Notes:</b> {intelligence.follow_up_notes or 'None'}</li>"
+            f"<li><b>Key Points:</b> {', '.join(intelligence.key_points) if intelligence.key_points else 'None'}</li>"
             f"<li><b>Agent Quality Notes:</b> {intelligence.agent_quality_notes}</li>"
             f"</ul>"
         )
-        if transcript:
+        privacy_mode = get_settings().store_transcript_in_crm
+        if transcript and privacy_mode != "none":
+            if privacy_mode == "truncated" and len(transcript) > 500:
+                displayed_transcript = transcript[:500] + "\n... [Transcript truncated for privacy]"
+                label = "View Audio Transcript (Truncated)"
+            else:
+                displayed_transcript = transcript
+                label = "View Audio Transcript"
+
             html_content += (
-                f"<details><summary><b>View Audio Transcript</b></summary>"
+                f"<details><summary><b>{label}</b></summary>"
                 f"<pre style='white-space: pre-wrap; font-size: 11px; background: #f8f9fa; padding: 8px; border-radius: 4px;'>"
-                f"{transcript}"
+                f"{displayed_transcript}"
                 f"</pre></details>"
             )
         html_content += "</div>"
 
         comment_payload = {
+            "doctype": "Comment",
             "reference_doctype": reference_doctype,
             "reference_name": reference_name,
             "content": html_content,
+            "comment_type": "Comment",
             "comment_by": "AI Automation Pipeline",
         }
 
         async with httpx.AsyncClient(timeout=10.0) as client:
-            url = f"{self.base_url}/api/method/frappe.desk.form.utils.add_comment"
-            res = await client.post(url, headers=self._get_headers(), json=comment_payload)
-            return res.status_code == 200
+            url = f"{self.base_url}/api/resource/Comment"
+            try:
+                res = await client.post(url, headers=self._get_headers(), json=comment_payload)
+                res.raise_for_status()
+                return True
+            except httpx.HTTPStatusError as exc:
+                logger.error(
+                    f"[FrappeCRMClient] Failed to add timeline comment to {reference_doctype} '{reference_name}': "
+                    f"HTTP {exc.response.status_code}"
+                )
+                return False
+            except Exception as exc:
+                logger.error(
+                    f"[FrappeCRMClient] Network/connection error adding timeline comment to {reference_doctype} '{reference_name}': {exc}"
+                )
+                return False
 
     async def create_followup_task(
         self,
@@ -351,16 +385,20 @@ class FrappeCRMClient:
         assigned_to: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Create a Follow-up CRM Task in Frappe CRM if requested."""
-        if not intelligence.follow_up_at and intelligence.call_outcome != CallOutcome.FOLLOW_UP:
+        if not intelligence.follow_up_required:
             return None
 
         # Priority mapping
         priority = "High" if intelligence.lead_quality == LeadQuality.HOT else "Medium"
 
         due_date_str = (
-            intelligence.follow_up_at.strftime("%Y-%m-%d %H:%M:%S")
-            if intelligence.follow_up_at
-            else (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+            intelligence.follow_up_date.strftime("%Y-%m-%d %H:%M:%S")
+            if getattr(intelligence, 'follow_up_date', None)
+            else (
+                intelligence.follow_up_at.strftime("%Y-%m-%d %H:%M:%S") 
+                if getattr(intelligence, 'follow_up_at', None) 
+                else (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+            )
         )
 
         assigned_user = assigned_to or ""
@@ -377,7 +415,7 @@ class FrappeCRMClient:
 
         task_payload = {
             "doctype": "CRM Task",
-            "title": f"Follow-up: {intelligence.next_action[:60]}",
+            "title": f"Follow-up: {intelligence.recommended_action[:60] if intelligence.recommended_action else intelligence.next_action[:60]}",
             "priority": priority,
             "status": "Todo",
             "due_date": due_date_str,
@@ -388,8 +426,9 @@ class FrappeCRMClient:
                 f"<b>Generated by AI Call Intelligence</b><br/>"
                 f"<b>Call Log Reference:</b> {call_log_id}<br/>"
                 f"<b>Call Summary:</b> {intelligence.call_summary}<br/>"
-                f"<b>Next Action Required:</b> {intelligence.next_action}<br/>"
-                f"<b>Primary Objection:</b> {intelligence.primary_objection.value}<br/>"
+                f"<b>Next Action Required:</b> {intelligence.recommended_action or intelligence.next_action}<br/>"
+                f"<b>Follow-up Notes:</b> {intelligence.follow_up_notes or 'None'}<br/>"
+                f"<b>Objections:</b> {', '.join(intelligence.objections) if intelligence.objections else (intelligence.primary_objection.value if hasattr(intelligence, 'primary_objection') else 'None')}<br/>"
                 f"<b>Quality Notes:</b> {intelligence.agent_quality_notes}"
             ),
         }
@@ -402,13 +441,19 @@ class FrappeCRMClient:
             logger.info(f"[FrappeCRMClient] Created mock Follow-up Task: {task_id}")
             return task_payload
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            url = f"{self.base_url}/api/resource/CRM Task"
-            response = await client.post(url, headers=self._get_headers(), json=task_payload)
-            response.raise_for_status()
-            created_task = response.json().get("data", {})
-            logger.info(f"[FrappeCRMClient] Successfully created live CRM Task: {created_task.get('name')}")
-            return created_task
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                url = f"{self.base_url}/api/resource/CRM Task"
+                response = await client.post(url, headers=self._get_headers(), json=task_payload)
+                response.raise_for_status()
+                created_task = response.json().get("data", {})
+                logger.info(f"[FrappeCRMClient] Successfully created live CRM Task: {created_task.get('name')}")
+                return created_task
+        except Exception as exc:
+            logger.warning(
+                f"[FrappeCRMClient] Follow-up Task creation failed non-fatally for call log {call_log_id}: {exc}"
+            )
+            return None
 
     async def update_lead_status(
         self,
@@ -555,6 +600,14 @@ class FrappeCRMClient:
         notes_str = extract("Agent Quality Notes")
         summary_str = extract_summary()
         
+        # Phase 3 Fields
+        objections_list_str = extract("Objections")
+        rec_action_str = extract("Recommended Action")
+        follow_up_req_str = extract("Follow-up Required")
+        follow_up_date_str = extract("Follow-up Date")
+        follow_up_notes_str = extract("Follow-up Notes")
+        key_points_str = extract("Key Points")
+        
         # Parse Enum fields
         try:
             outcome = CallOutcome(outcome_str)
@@ -579,6 +632,13 @@ class FrappeCRMClient:
             except ValueError:
                 pass
                 
+        dt_new = None
+        if follow_up_date_str and follow_up_date_str.lower() != "none":
+            try:
+                dt_new = datetime.fromisoformat(follow_up_date_str)
+            except ValueError:
+                pass
+                
         return CallIntelligence(
             call_summary=summary_str or "Summary extracted from timeline.",
             call_outcome=outcome,
@@ -587,7 +647,15 @@ class FrappeCRMClient:
             customer_intent=intent_str,
             next_action=action_str,
             follow_up_at=dt,
-            agent_quality_notes=notes_str
+            agent_quality_notes=notes_str,
+            
+            # Phase 3
+            key_points=[k.strip() for k in key_points_str.split(",")] if key_points_str and key_points_str != "None" else [],
+            follow_up_required=(follow_up_req_str.lower() == "true"),
+            follow_up_date=dt_new,
+            follow_up_notes=follow_up_notes_str if follow_up_notes_str != "None" else None,
+            objections=[o.strip() for o in objections_list_str.split(",")] if objections_list_str and objections_list_str != "None" else [],
+            recommended_action=rec_action_str if rec_action_str != "None" else None
         )
 
 

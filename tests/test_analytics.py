@@ -129,7 +129,7 @@ def test_frappe_comment_parsing():
     
     client = FrappeCRMClient(mock_mode=True)
     html = """
-    <div><h4>AI Call Intelligence Analysis <span style="color:green;">[Verified]</span></h4><p><b>Summary:</b> Customer was very interested in the product.</p><ul><li><b>Outcome:</b> Follow-up</li><li><b>Lead Quality:</b> Warm</li><li><b>Customer Intent:</b> Buy</li><li><b>Primary Objection:</b> Price</li><li><b>Next Action:</b> Send pricing</li><li><b>Follow-up At:</b> 2026-09-18T10:00:00+00:00</li><li><b>Agent Quality Notes:</b> Good job</li></ul></div>
+    <div><h4>AI Call Intelligence Analysis <span style="color:green;">[Verified]</span></h4><p><b>Summary:</b> Customer was very interested in the product.</p><ul><li><b>Outcome:</b> Follow-up</li><li><b>Lead Quality:</b> Warm</li><li><b>Customer Intent:</b> Buy</li><li><b>Primary Objection:</b> Price</li><li><b>Next Action:</b> Send pricing</li><li><b>Follow-up At:</b> 2026-09-18T10:00:00+00:00</li><li><b>Agent Quality Notes:</b> Good job</li><li><b>Follow-up Required:</b> True</li><li><b>Objections:</b> Price, Competitor</li><li><b>Recommended Action:</b> Schedule follow-up</li><li><b>Key Points:</b> Budget is tight, Interested in scaling</li></ul></div>
     """
     
     intel = client._parse_html_comment(html)
@@ -142,4 +142,51 @@ def test_frappe_comment_parsing():
     assert intel.agent_quality_notes == "Good job"
     assert intel.follow_up_at is not None
     assert intel.follow_up_at.isoformat() == "2026-09-18T10:00:00+00:00"
+    
+    # Phase 3
+    assert intel.follow_up_required is True
+    assert intel.objections == ["Price", "Competitor"]
+    assert intel.recommended_action == "Schedule follow-up"
+    assert intel.key_points == ["Budget is tight", "Interested in scaling"]
 
+def test_get_call_intelligence_endpoint():
+    pipeline = get_pipeline()
+    pipeline.idempotency_store.clear()
+    
+    intelligence1 = CallIntelligence(
+        call_summary="Test Endpoint",
+        call_outcome=CallOutcome.FOLLOW_UP,
+        lead_quality=LeadQuality.HOT,
+        primary_objection=PrimaryObjection.NONE,
+        customer_intent="Buy",
+        next_action="Call back",
+        follow_up_at=datetime.now() + timedelta(days=1),
+        follow_up_required=True,
+        follow_up_notes="Need to send pricing",
+        agent_quality_notes="Good",
+        review_flag=False,
+    )
+    
+    call1 = PipelineResponse(
+        success=True,
+        provider_call_id="call-int-1",
+        idempotent_replay=False,
+        intelligence=intelligence1,
+        duration_seconds=120,
+        event_timestamp=datetime.now(),
+        agent_id="Agent Smith",
+    )
+    
+    pipeline.idempotency_store.set("call-int-1", call1)
+    
+    # Successful fetch
+    res = client.get("/api/v1/dashboard/calls/call-int-1/intelligence")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["call_summary"] == "Test Endpoint"
+    assert data["follow_up_required"] is True
+    assert data["follow_up_notes"] == "Need to send pricing"
+    
+    # Not found
+    res2 = client.get("/api/v1/dashboard/calls/call-missing/intelligence")
+    assert res2.status_code == 404

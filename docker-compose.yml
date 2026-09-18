@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  ai-call-intelligence:
+    build: .
+    image: ai-call-intelligence:latest
+    container_name: ai_call_intelligence
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_ENV=production
+      - MOCK_MODE=false
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=json
+      - IDEMPOTENCY_BACKEND=sqlite
+      - SQLITE_DB_PATH=/app/data/idempotency.db
+      - METRICS_ENABLED=true
+    volumes:
+      - crm_idempotency_data:/app/data
+    env_file:
+      - .env
+
+volumes:
+  crm_idempotency_data:
