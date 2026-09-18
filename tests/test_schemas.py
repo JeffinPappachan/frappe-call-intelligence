@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+from datetime import datetime, UTC
+
 import pytest
 from pydantic import ValidationError
 
@@ -55,7 +56,7 @@ def test_valid_call_intelligence_schema():
         primary_objection=PrimaryObjection.PRICE,
         customer_intent="Evaluate enterprise pricing and feature set",
         next_action="Send revised pricing quotation by end of day",
-        follow_up_at=datetime.now(timezone.utc),
+        follow_up_at=datetime.now(UTC),
         agent_quality_notes="Agent conducted clear discovery questioning and proposed timely follow-up.",
         review_flag=False,
     )

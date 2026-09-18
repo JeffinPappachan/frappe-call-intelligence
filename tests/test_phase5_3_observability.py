@@ -1,25 +1,24 @@
 import json
 import logging
-import pytest
+
 import httpx
+import pytest
 from httpx import ASGITransport
 
-from src.server import app
 from src.config import get_settings
 from src.observability import (
-    metrics,
-    RedactingJsonFormatter,
     AppError,
     ErrorClassification,
-    request_id_ctx,
+    RedactingJsonFormatter,
+    metrics,
 )
-from src.pipeline import CallIntelligencePipeline, SQLiteIdempotencyStore
+from src.pipeline import CallIntelligencePipeline
 from src.schemas import (
-    TelephonyWebhookPayload,
     CallDirection,
     CallStatus,
+    TelephonyWebhookPayload,
 )
-
+from src.server import app
 
 # =====================================================================
 # 1. Request ID & Correlation Tests
@@ -171,8 +170,8 @@ def test_structured_logging_redaction():
         exc_info=None,
     )
     # Attach sensitive attributes
-    setattr(record, "api_key", "gsk_sensitive_key_value")
-    setattr(record, "call_id", "call-obs-999")
+    record.api_key = "gsk_sensitive_key_value"
+    record.call_id = "call-obs-999"
 
     formatted_json = formatter.format(record)
     parsed = json.loads(formatted_json)

@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Optional, List, Dict, Any
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -55,10 +55,10 @@ class TelephonyWebhookPayload(BaseModel):
     direction: CallDirection = Field(default=CallDirection.OUTBOUND, description="Direction of the call")
     call_status: CallStatus = Field(default=CallStatus.COMPLETED, description="Call completion status")
     duration_seconds: int = Field(default=0, ge=0, description="Call duration in seconds")
-    recording_url: Optional[str] = Field(default=None, description="Public or presigned URL to the call audio recording")
-    agent_id: Optional[str] = Field(default=None, description="Telecaller email or system ID")
-    call_type: Optional[str] = Field(default="sales_enquiry", description="Category or purpose of the call")
-    event_timestamp: Optional[datetime] = Field(default=None, description="Provider timestamp of the event")
+    recording_url: str | None = Field(default=None, description="Public or presigned URL to the call audio recording")
+    agent_id: str | None = Field(default=None, description="Telecaller email or system ID")
+    call_type: str | None = Field(default="sales_enquiry", description="Category or purpose of the call")
+    event_timestamp: datetime | None = Field(default=None, description="Provider timestamp of the event")
 
     @field_validator("provider_call_id")
     @classmethod
@@ -72,9 +72,9 @@ class TelephonyWebhookPayload(BaseModel):
 class AudioProcessRequest(BaseModel):
     """Manual audio upload or processing request payload."""
 
-    provider_call_id: Optional[str] = Field(default=None, description="Optional custom call identifier")
+    provider_call_id: str | None = Field(default=None, description="Optional custom call identifier")
     lead_phone: str = Field(..., description="Phone number associated with the CRM Lead")
-    agent_id: Optional[str] = Field(default="agent@example.com", description="Telecaller identifier")
+    agent_id: str | None = Field(default="agent@example.com", description="Telecaller identifier")
     direction: CallDirection = Field(default=CallDirection.OUTBOUND)
     duration_seconds: int = Field(default=60, ge=0)
 
@@ -90,22 +90,22 @@ class CallIntelligence(BaseModel):
         description="Main customer objection (Price / Timing / Competitor / No need / Other / None)",
     )
     customer_intent: str = Field(..., description="What the customer was trying to achieve or inquire about")
-    key_points: List[str] = Field(default_factory=list, description="Key discussion points")
-    
+    key_points: list[str] = Field(default_factory=list, description="Key discussion points")
+
     # Existing compatible fields
     next_action: str = Field(..., description="Concrete next sales/operational action")
-    follow_up_at: Optional[datetime] = Field(
+    follow_up_at: datetime | None = Field(
         default=None,
         description="Validated ISO date and time for follow-up, or null if not applicable",
     )
-    
+
     # New Phase 3 AI requested fields
     follow_up_required: bool = Field(default=False, description="Is a follow up required?")
-    follow_up_date: Optional[datetime] = Field(default=None, description="Follow up date if explicitly available")
-    follow_up_notes: Optional[str] = Field(default=None, description="Notes for the follow up")
-    objections: List[str] = Field(default_factory=list, description="List of all objections raised")
-    recommended_action: Optional[str] = Field(default=None, description="Recommended next action")
-    
+    follow_up_date: datetime | None = Field(default=None, description="Follow up date if explicitly available")
+    follow_up_notes: str | None = Field(default=None, description="Notes for the follow up")
+    objections: list[str] = Field(default_factory=list, description="List of all objections raised")
+    recommended_action: str | None = Field(default=None, description="Recommended next action")
+
     agent_quality_notes: str = Field(
         ...,
         description="Observations regarding telecaller adherence, greeting, pacing, and tone",
@@ -125,18 +125,18 @@ class PipelineResponse(BaseModel):
         default=False,
         description="Indicates whether this event was already processed and returned from deduplication cache",
     )
-    transcript: Optional[str] = None
-    intelligence: Optional[CallIntelligence] = None
-    matched_lead: Optional[str] = None
-    frappe_call_log_id: Optional[str] = None
-    frappe_task_id: Optional[str] = None
+    transcript: str | None = None
+    intelligence: CallIntelligence | None = None
+    matched_lead: str | None = None
+    frappe_call_log_id: str | None = None
+    frappe_task_id: str | None = None
     message: str = "Call successfully processed"
-    
+
     # Metadata for dashboard
-    duration_seconds: Optional[int] = None
-    direction: Optional[CallDirection] = None
-    event_timestamp: Optional[datetime] = None
-    agent_id: Optional[str] = None
+    duration_seconds: int | None = None
+    direction: CallDirection | None = None
+    event_timestamp: datetime | None = None
+    agent_id: str | None = None
 
 
 class DashboardMetricsResponse(BaseModel):
@@ -144,13 +144,13 @@ class DashboardMetricsResponse(BaseModel):
     completed_calls: int = 0
     missed_calls: int = 0
     average_call_duration_seconds: float = 0.0
-    calls_per_telecaller: Dict[str, int] = {}
-    lead_quality_distribution: Dict[str, int] = {}
-    call_outcome_distribution: Dict[str, int] = {}
+    calls_per_telecaller: dict[str, int] = {}
+    lead_quality_distribution: dict[str, int] = {}
+    call_outcome_distribution: dict[str, int] = {}
     follow_ups_due: int = 0
     follow_ups_overdue: int = 0
 
 
 class DashboardCallFeedResponse(BaseModel):
-    calls: List[PipelineResponse] = []
+    calls: list[PipelineResponse] = []
 

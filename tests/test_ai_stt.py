@@ -1,4 +1,5 @@
 import pytest
+
 from src.ai_service import MockAIService
 from src.schemas import CallOutcome, LeadQuality
 from src.stt_service import MockSTTService

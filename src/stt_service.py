@@ -1,6 +1,5 @@
-from abc import ABC, abstractmethod
 import logging
-from typing import Optional
+from abc import ABC, abstractmethod
 
 from src.config import Settings, get_settings
 
@@ -11,9 +10,8 @@ class STTService(ABC):
     """Abstract interface for Speech-to-Text transcription services."""
 
     @abstractmethod
-    async def transcribe(self, audio_source: str | bytes, filename: Optional[str] = None) -> str:
+    async def transcribe(self, audio_source: str | bytes, filename: str | None = None) -> str:
         """Transcribe audio from a local file path, URL, or raw bytes."""
-        pass
 
 
 class MockSTTService(STTService):
@@ -37,7 +35,7 @@ class MockSTTService(STTService):
         "Agent: Theerchayaayum, Friday 3 PM-nu follow-up call schedule cheyyaam. Thank you!"
     )
 
-    async def transcribe(self, audio_source: str | bytes, filename: Optional[str] = None) -> str:
+    async def transcribe(self, audio_source: str | bytes, filename: str | None = None) -> str:
         logger.info("[MockSTTService] Generating mock transcription (Simulation mode active)")
         if filename and ("malayalam" in filename.lower() or "manglish" in filename.lower()):
             return self.MALAYALAM_TRANSCRIPT
@@ -51,9 +49,10 @@ class RealSTTService(STTService):
         self.provider = provider
         self.api_key = api_key
 
-    async def transcribe(self, audio_source: str | bytes, filename: Optional[str] = None) -> str:
-        import httpx
+    async def transcribe(self, audio_source: str | bytes, filename: str | None = None) -> str:
         import os
+
+        import httpx
 
         if not self.api_key:
             raise ValueError("STT API key is not configured.")
@@ -71,7 +70,7 @@ class RealSTTService(STTService):
 
         url = "https://api.openai.com/v1/audio/transcriptions"
         model_name = "whisper-1"
-        
+
         if self.provider == "groq":
             url = "https://api.groq.com/openai/v1/audio/transcriptions"
             model_name = "whisper-large-v3"
@@ -79,7 +78,7 @@ class RealSTTService(STTService):
         headers = {
             "Authorization": f"Bearer {self.api_key}"
         }
-        
+
         files = {
             "file": (name, file_bytes, "audio/mpeg"),
         }
@@ -98,7 +97,7 @@ class RealSTTService(STTService):
             raise
 
 
-def get_stt_service(settings: Optional[Settings] = None) -> STTService:
+def get_stt_service(settings: Settings | None = None) -> STTService:
     """Factory to retrieve configured STT provider."""
     cfg = settings or get_settings()
     if cfg.mock_mode or cfg.stt_provider == "mock" or not cfg.stt_api_key:

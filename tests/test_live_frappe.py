@@ -1,5 +1,6 @@
-from datetime import datetime, timezone
 import os
+from datetime import datetime, UTC
+
 import pytest
 from dotenv import load_dotenv
 
@@ -48,7 +49,7 @@ async def test_live_lead_lookup(live_client):
 @skip_unless_live
 @pytest.mark.asyncio
 async def test_live_call_log_and_idempotency(live_client):
-    test_call_id = f"test_pytest_{int(datetime.now(timezone.utc).timestamp())}"
+    test_call_id = f"test_pytest_{int(datetime.now(UTC).timestamp())}"
     event = TelephonyWebhookPayload(
         provider_call_id=test_call_id,
         telephony_provider="exotel",
@@ -65,7 +66,7 @@ async def test_live_call_log_and_idempotency(live_client):
         primary_objection=PrimaryObjection.NONE,
         customer_intent="Automated testing",
         next_action="Review automated test run",
-        follow_up_at=datetime.now(timezone.utc),
+        follow_up_at=datetime.now(UTC),
         agent_quality_notes="Automated test note",
     )
 

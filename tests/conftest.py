@@ -1,7 +1,6 @@
-import os
 import pytest
+
 from src.config import get_settings
-from src.pipeline import _pipeline_instance
 
 
 @pytest.fixture(autouse=True)

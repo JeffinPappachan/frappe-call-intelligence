@@ -1,11 +1,11 @@
 import io
 import time
-import pytest
-import httpx
-from httpx import ASGITransport
 from unittest.mock import patch
 
-from src.server import app
+import httpx
+import pytest
+from httpx import ASGITransport
+
 from src.frappe_client import FrappeCRMClient
 from src.pipeline import (
     CallIntelligencePipeline,
@@ -21,7 +21,7 @@ from src.schemas import (
     PipelineResponse,
     TelephonyWebhookPayload,
 )
-
+from src.server import app
 
 # =====================================================================
 # SEC-06 Audio Upload Validation Tests

@@ -1,7 +1,11 @@
-from abc import ABC, abstractmethod
-from datetime import datetime
+import json
 import logging
-from typing import Dict, Optional, List
+import sqlite3
+import threading
+import time
+from abc import ABC, abstractmethod
+from collections import OrderedDict
+from datetime import datetime
 
 from src.ai_service import AIService, get_ai_service
 from src.frappe_client import FrappeCRMClient, get_frappe_client
@@ -15,12 +19,6 @@ from src.stt_service import STTService, get_stt_service
 logger = logging.getLogger(__name__)
 
 
-from collections import OrderedDict
-import json
-import sqlite3
-import threading
-import time
-
 class IdempotencyStore(ABC):
     """Abstract store for webhook deduplication and replay caching."""
 
@@ -29,7 +27,7 @@ class IdempotencyStore(ABC):
         pass
 
     @abstractmethod
-    def get(self, key: str) -> Optional[PipelineResponse]:
+    def get(self, key: str) -> PipelineResponse | None:
         pass
 
     @abstractmethod
@@ -37,7 +35,7 @@ class IdempotencyStore(ABC):
         pass
 
     @abstractmethod
-    def get_all(self) -> List[PipelineResponse]:
+    def get_all(self) -> list[PipelineResponse]:
         pass
 
     @abstractmethod
@@ -47,14 +45,14 @@ class IdempotencyStore(ABC):
 
 class InMemoryIdempotencyStore(IdempotencyStore):
     """Thread-safe bounded in-memory idempotency cache with TTL expiration (REL-03).
-    
+
     Features:
     - Bounded capacity with LRU eviction (max_items).
     - Time-To-Live (TTL) expiration per cached item.
     - Thread-safe access via RLock.
     """
 
-    def __init__(self, ttl_seconds: Optional[int] = None, max_items: Optional[int] = None):
+    def __init__(self, ttl_seconds: int | None = None, max_items: int | None = None):
         from src.config import get_settings
         settings = get_settings()
         self.ttl_seconds = ttl_seconds if ttl_seconds is not None else settings.idempotency_ttl_seconds
@@ -63,7 +61,7 @@ class InMemoryIdempotencyStore(IdempotencyStore):
         self._cache: OrderedDict[str, tuple[PipelineResponse, float]] = OrderedDict()
         self._lock = threading.RLock()
 
-    def _purge_expired(self, now: Optional[float] = None) -> None:
+    def _purge_expired(self, now: float | None = None) -> None:
         """Internal helper to purge expired entries."""
         current_time = now if now is not None else time.time()
         expired_keys = [k for k, (_, exp) in self._cache.items() if current_time >= exp]
@@ -80,7 +78,7 @@ class InMemoryIdempotencyStore(IdempotencyStore):
                 return False
             return True
 
-    def get(self, key: str) -> Optional[PipelineResponse]:
+    def get(self, key: str) -> PipelineResponse | None:
         with self._lock:
             if key not in self._cache:
                 return None
@@ -103,7 +101,7 @@ class InMemoryIdempotencyStore(IdempotencyStore):
             self._cache[key] = (value, expiry)
             self._cache.move_to_end(key)
 
-    def get_all(self) -> List[PipelineResponse]:
+    def get_all(self) -> list[PipelineResponse]:
         with self._lock:
             self._purge_expired()
             return [resp for resp, _ in self._cache.values()]
@@ -115,12 +113,12 @@ class InMemoryIdempotencyStore(IdempotencyStore):
 
 class SQLiteIdempotencyStore(IdempotencyStore):
     """Local SQLite persistent idempotency store with TTL expiration (REL-03).
-    
+
     Provides persistent local disk storage across server restarts while honoring TTL.
     Note: For multi-worker, horizontally-scaled cloud deployments, Redis is recommended.
     """
 
-    def __init__(self, db_path: str = "idempotency.db", ttl_seconds: Optional[int] = None, max_items: Optional[int] = None):
+    def __init__(self, db_path: str = "idempotency.db", ttl_seconds: int | None = None, max_items: int | None = None):
         from src.config import get_settings
         settings = get_settings()
         self.db_path = db_path
@@ -158,7 +156,7 @@ class SQLiteIdempotencyStore(IdempotencyStore):
             cur = conn.execute("SELECT 1 FROM idempotency_cache WHERE key = ?", (key,))
             return cur.fetchone() is not None
 
-    def get(self, key: str) -> Optional[PipelineResponse]:
+    def get(self, key: str) -> PipelineResponse | None:
         with self._lock, self._get_conn() as conn:
             self._purge_expired(conn)
             cur = conn.execute("SELECT payload FROM idempotency_cache WHERE key = ?", (key,))
@@ -204,7 +202,7 @@ class SQLiteIdempotencyStore(IdempotencyStore):
             )
             conn.commit()
 
-    def get_all(self) -> List[PipelineResponse]:
+    def get_all(self) -> list[PipelineResponse]:
         with self._lock, self._get_conn() as conn:
             self._purge_expired(conn)
             cur = conn.execute("SELECT payload FROM idempotency_cache ORDER BY created_at DESC")
@@ -232,10 +230,10 @@ class CallIntelligencePipeline:
 
     def __init__(
         self,
-        stt_service: Optional[STTService] = None,
-        ai_service: Optional[AIService] = None,
-        frappe_client: Optional[FrappeCRMClient] = None,
-        idempotency_store: Optional[IdempotencyStore] = None,
+        stt_service: STTService | None = None,
+        ai_service: AIService | None = None,
+        frappe_client: FrappeCRMClient | None = None,
+        idempotency_store: IdempotencyStore | None = None,
     ):
         from src.config import get_settings
         settings = get_settings()
@@ -243,7 +241,7 @@ class CallIntelligencePipeline:
         self.stt_service = stt_service or get_stt_service()
         self.ai_service = ai_service or get_ai_service()
         self.frappe_client = frappe_client or get_frappe_client()
-        
+
         if idempotency_store:
             self.idempotency_store = idempotency_store
         elif settings.idempotency_backend == "sqlite":
@@ -264,10 +262,17 @@ class CallIntelligencePipeline:
     def _seed_mock_data(self):
         """Seed realistic mock calls for the dashboard on startup."""
         from datetime import timedelta
-        from src.schemas import CallIntelligence, CallOutcome, LeadQuality, PrimaryObjection, CallDirection
+
+        from src.schemas import (
+            CallDirection,
+            CallIntelligence,
+            CallOutcome,
+            LeadQuality,
+            PrimaryObjection,
+        )
 
         now = datetime.now()
-        
+
         c1 = PipelineResponse(
             success=True, provider_call_id="SEED-001", idempotent_replay=False,
             intelligence=CallIntelligence(
@@ -285,7 +290,7 @@ class CallIntelligencePipeline:
             agent_id="sarah.demo@example.com", matched_lead="Alice Johnson",
             frappe_call_log_id="CALL-LOG-MOCK1", frappe_task_id="TASK-MOCK1"
         )
-        
+
         c2 = PipelineResponse(
             success=True, provider_call_id="SEED-002", idempotent_replay=False,
             intelligence=CallIntelligence(
@@ -303,7 +308,7 @@ class CallIntelligencePipeline:
             agent_id="john.demo@example.com", matched_lead="Bob Martinez",
             frappe_call_log_id="CALL-LOG-MOCK2"
         )
-        
+
         c3 = PipelineResponse(
             success=True, provider_call_id="SEED-003", idempotent_replay=False,
             intelligence=CallIntelligence(
@@ -321,7 +326,7 @@ class CallIntelligencePipeline:
             agent_id="sarah.demo@example.com", matched_lead="Carol Smith",
             frappe_call_log_id="CALL-LOG-MOCK3"
         )
-        
+
         self.idempotency_store.set("SEED-001", c1)
         self.idempotency_store.set("SEED-002", c2)
         self.idempotency_store.set("SEED-003", c3)
@@ -329,11 +334,16 @@ class CallIntelligencePipeline:
     async def process_call(
         self,
         event: TelephonyWebhookPayload,
-        raw_audio: Optional[bytes] = None,
-        audio_filename: Optional[str] = None,
+        raw_audio: bytes | None = None,
+        audio_filename: str | None = None,
     ) -> PipelineResponse:
         """Process a call event end-to-end with idempotency guarantees and observability."""
-        from src.observability import metrics, AppError, ErrorClassification, request_id_ctx
+        from src.observability import (
+            AppError,
+            ErrorClassification,
+            metrics,
+            request_id_ctx,
+        )
         start_time = time.time()
         call_id = event.provider_call_id
         req_id = request_id_ctx.get("-")
@@ -367,7 +377,7 @@ class CallIntelligencePipeline:
                 extra={"call_id": call_id, "request_id": req_id, "error_class": "stt_error"},
             )
             raise AppError(
-                message=f"STT transcription failed: {str(exc)}",
+                message=f"STT transcription failed: {exc!s}",
                 error_class=ErrorClassification.STT_ERROR,
                 status_code=502,
             ) from exc
@@ -389,7 +399,7 @@ class CallIntelligencePipeline:
                 extra={"call_id": call_id, "request_id": req_id, "error_class": "llm_error"},
             )
             raise AppError(
-                message=f"LLM analysis failed: {str(exc)}",
+                message=f"LLM analysis failed: {exc!s}",
                 error_class=ErrorClassification.LLM_ERROR,
                 status_code=502,
             ) from exc
@@ -420,7 +430,7 @@ class CallIntelligencePipeline:
                 extra={"call_id": call_id, "lead_id": lead_id, "request_id": req_id, "error_class": "crm_error"},
             )
             raise AppError(
-                message=f"CRM Call Log creation failed: {str(exc)}",
+                message=f"CRM Call Log creation failed: {exc!s}",
                 error_class=ErrorClassification.CRM_ERROR,
                 status_code=502,
             ) from exc
@@ -503,7 +513,7 @@ class CallIntelligencePipeline:
 
 
 # Global pipeline singleton
-_pipeline_instance: Optional[CallIntelligencePipeline] = None
+_pipeline_instance: CallIntelligencePipeline | None = None
 
 
 def get_pipeline() -> CallIntelligencePipeline:

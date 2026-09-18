@@ -1,7 +1,10 @@
-from datetime import datetime, timedelta, timezone
+from __future__ import annotations
+
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Any
+
 import httpx
 
 from src.config import Settings, get_settings
@@ -13,6 +16,9 @@ from src.schemas import (
     LeadQuality,
     TelephonyWebhookPayload,
 )
+
+if TYPE_CHECKING:
+    from src.schemas import PipelineResponse
 
 logger = logging.getLogger(__name__)
 
@@ -80,10 +86,10 @@ class FrappeCRMClient:
 
     def __init__(
         self,
-        base_url: Optional[str] = None,
-        api_key: Optional[str] = None,
-        api_secret: Optional[str] = None,
-        mock_mode: Optional[bool] = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        api_secret: str | None = None,
+        mock_mode: bool | None = None,
     ):
         settings = get_settings()
         self.base_url = (base_url or settings.frappe_base_url).rstrip("/")
@@ -97,12 +103,12 @@ class FrappeCRMClient:
             self.mock_mode = settings.mock_mode or not (self.api_key and self.api_secret)
 
         # In-memory stores for simulation mode
-        self._mock_call_logs: Dict[str, dict] = {}
-        self._mock_tasks: Dict[str, dict] = {}
+        self._mock_call_logs: dict[str, dict] = {}
+        self._mock_tasks: dict[str, dict] = {}
         self._call_log_counter = 1
         self._task_counter = 1
 
-    def _get_headers(self) -> Dict[str, str]:
+    def _get_headers(self) -> dict[str, str]:
         """Generate Frappe Token Authentication headers without exposing secrets."""
         return {
             "Authorization": f"token {self.api_key}:{self.api_secret}",
@@ -115,7 +121,7 @@ class FrappeCRMClient:
         """Extract only numerical digits from a phone string."""
         return re.sub(r"\D", "", phone or "")
 
-    async def lookup_lead_by_phone(self, phone: str) -> Optional[Dict[str, Any]]:
+    async def lookup_lead_by_phone(self, phone: str) -> dict[str, Any] | None:
         """Find a CRM Lead by matching against phone or mobile number."""
         clean_target = self._normalize_phone_digits(phone)
         if not clean_target:
@@ -135,7 +141,7 @@ class FrappeCRMClient:
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 url = f"{self.base_url}/api/resource/CRM Lead"
-                params = {
+                params: dict[str, str | int | float | bool | None] = {
                     "fields": '["name","lead_name","email","mobile_no","phone","lead_owner","status"]',
                     "limit_page_length": 50,
                 }
@@ -147,22 +153,21 @@ class FrappeCRMClient:
                     mob_digits = self._normalize_phone_digits(lead.get("mobile_no", ""))
                     ph_digits = self._normalize_phone_digits(lead.get("phone", ""))
                     if (
-                        (lookup_suffix and (lookup_suffix in mob_digits or mob_digits.endswith(lookup_suffix)))
-                        or (lookup_suffix and (lookup_suffix in ph_digits or ph_digits.endswith(lookup_suffix)))
+                        lookup_suffix in mob_digits
+                        or mob_digits.endswith(lookup_suffix)
+                        or lookup_suffix in ph_digits
+                        or ph_digits.endswith(lookup_suffix)
                     ):
-                        logger.info(f"[FrappeCRMClient] Matched Lead '{lead.get('lead_name')}' ({lead.get('name')})")
+                        logger.info(f"[FrappeCRMClient] Matched Lead '{lead.get('name')}' for phone '{phone}'")
                         return lead
 
-                logger.warning(f"[FrappeCRMClient] No CRM Lead matched for phone {phone}")
+                logger.info(f"[FrappeCRMClient] No existing CRM Lead matched phone '{phone}'.")
                 return None
-        except httpx.HTTPStatusError as exc:
-            logger.error(f"[FrappeCRMClient] Lead lookup HTTP error: {exc.response.status_code}")
-            return None
         except Exception as exc:
-            logger.error(f"[FrappeCRMClient] Lead lookup connection error: {exc}")
+            logger.warning(f"[FrappeCRMClient] Error querying CRM Lead: {exc}")
             return None
 
-    async def get_call_log_by_provider_id(self, provider_call_id: str) -> Optional[Dict[str, Any]]:
+    async def get_call_log_by_provider_id(self, provider_call_id: str) -> dict[str, Any] | None:
         """Check if a Call Log with this provider ID already exists in Frappe CRM (Idempotency)."""
         if self.mock_mode:
             for log in self._mock_call_logs.values():
@@ -173,7 +178,7 @@ class FrappeCRMClient:
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 url = f"{self.base_url}/api/resource/CRM Call Log"
-                params = {
+                params: dict[str, str | int | float | bool | None] = {
                     "filters": f'[["id","=","{provider_call_id}"]]',
                     "fields": '["name","id","from","to","status","reference_docname","duration"]',
                     "limit_page_length": 1,
@@ -212,8 +217,8 @@ class FrappeCRMClient:
         call_event: TelephonyWebhookPayload,
         transcript: str,
         intelligence: CallIntelligence,
-        lead_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        lead_id: str | None = None,
+    ) -> dict[str, Any]:
         """Create a Call Log in Frappe CRM and attach structured intelligence as a timeline comment."""
         # 1. Idempotency check against live Frappe CRM
         existing = await self.get_call_log_by_provider_id(call_event.provider_call_id)
@@ -276,7 +281,7 @@ class FrappeCRMClient:
             except httpx.HTTPStatusError as exc:
                 logger.error(f"[FrappeCRMClient] CRM Call Log creation failed: {exc.response.text}")
                 raise ValueError(f"Frappe Validation Error: {exc.response.text}") from exc
-                
+
             created_log = response.json().get("data", {})
             created_log_name = created_log.get("name")
             logger.info(f"[FrappeCRMClient] Successfully created live CRM Call Log: {created_log_name}")
@@ -301,7 +306,7 @@ class FrappeCRMClient:
         reference_name: str,
         title: str,
         intelligence: CallIntelligence,
-        transcript: Optional[str] = None,
+        transcript: str | None = None,
     ) -> bool:
         """Post a rich HTML comment to the document's timeline in Frappe Desk."""
         if self.mock_mode:
@@ -380,10 +385,10 @@ class FrappeCRMClient:
     async def create_followup_task(
         self,
         call_log_id: str,
-        lead_id: Optional[str],
+        lead_id: str | None,
         intelligence: CallIntelligence,
-        assigned_to: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
+        assigned_to: str | None = None,
+    ) -> dict[str, Any] | None:
         """Create a Follow-up CRM Task in Frappe CRM if requested."""
         if not intelligence.follow_up_required:
             return None
@@ -391,15 +396,16 @@ class FrappeCRMClient:
         # Priority mapping
         priority = "High" if intelligence.lead_quality == LeadQuality.HOT else "Medium"
 
-        due_date_str = (
-            intelligence.follow_up_date.strftime("%Y-%m-%d %H:%M:%S")
-            if getattr(intelligence, 'follow_up_date', None)
-            else (
-                intelligence.follow_up_at.strftime("%Y-%m-%d %H:%M:%S") 
-                if getattr(intelligence, 'follow_up_at', None) 
-                else (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
-            )
-        )
+        follow_up_date_val = getattr(intelligence, "follow_up_date", None)
+        follow_up_at_val = getattr(intelligence, "follow_up_at", None)
+
+        if follow_up_date_val is not None:
+            due_date_str = follow_up_date_val.strftime("%Y-%m-%d %H:%M:%S")
+        elif follow_up_at_val is not None:
+            due_date_str = follow_up_at_val.strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            fallback_dt = datetime.now() + timedelta(days=2)
+            due_date_str = fallback_dt.strftime("%Y-%m-%d %H:%M:%S")
 
         assigned_user = assigned_to or ""
         if assigned_user:
@@ -459,9 +465,9 @@ class FrappeCRMClient:
         self,
         lead_id: str,
         intelligence: CallIntelligence,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Update lead status in Frappe CRM and post timeline summary."""
-        updates: Dict[str, Any] = {}
+        updates: dict[str, Any] = {}
 
         # Map outcome to supported CRM Lead statuses:
         # ['New', 'Contacted', 'Nurture', 'Qualified', 'Converted', 'Unqualified', 'Junk']
@@ -501,25 +507,25 @@ class FrappeCRMClient:
             logger.error(f"[FrappeCRMClient] Error updating Lead '{lead_id}': {exc}")
             return {"name": lead_id, "error": str(exc)}
 
-    async def get_recent_call_logs(self, limit: int = 50) -> List["PipelineResponse"]:
+    async def get_recent_call_logs(self, limit: int = 50) -> list[PipelineResponse]:
         """Fetch recent call logs from Frappe CRM and map to PipelineResponse for dashboard."""
         from src.schemas import PipelineResponse
-        
+
         if self.mock_mode:
             return []
 
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 url = f"{self.base_url}/api/resource/CRM Call Log"
-                params = {
+                params: dict[str, str | int | float | bool | None] = {
                     "fields": '["name","id","duration","status","start_time","receiver","caller","owner","reference_docname","from","to"]',
                     "limit_page_length": limit,
-                    "order_by": "start_time desc"
+                    "order_by": "start_time desc",
                 }
                 response = await client.get(url, headers=self._get_headers(), params=params)
                 response.raise_for_status()
                 data = response.json().get("data", [])
-                
+
                 results = []
                 for row in data:
                     dt = None
@@ -529,10 +535,10 @@ class FrappeCRMClient:
                             dt = datetime.strptime(row["start_time"].split(".")[0], "%Y-%m-%d %H:%M:%S")
                         except Exception:
                             dt = datetime.now()
-                            
-                    
+
+
                     intel = await self._fetch_and_parse_intelligence(row.get("name"), client)
-                    
+
                     resp = PipelineResponse(
                         success=(row.get("status") == "Completed"),
                         provider_call_id=row.get("id") or row.get("name"),
@@ -551,23 +557,23 @@ class FrappeCRMClient:
             logger.error(f"[FrappeCRMClient] Error fetching recent call logs: {exc}")
             return []
 
-    async def _fetch_and_parse_intelligence(self, call_log_name: str, client: httpx.AsyncClient) -> Optional[CallIntelligence]:
+    async def _fetch_and_parse_intelligence(self, call_log_name: str, client: httpx.AsyncClient) -> CallIntelligence | None:
         """Fetch Timeline Comments for a Call Log and parse out the structured CallIntelligence data."""
         if not call_log_name:
             return None
-            
+
         try:
             url = f"{self.base_url}/api/resource/Comment"
-            params = {
+            params: dict[str, str | int | float | bool | None] = {
                 "filters": f'[["reference_name","=","{call_log_name}"],["reference_doctype","=","CRM Call Log"]]',
                 "fields": '["content"]',
                 "limit_page_length": 5,
-                "order_by": "creation desc"
+                "order_by": "creation desc",
             }
             response = await client.get(url, headers=self._get_headers(), params=params)
             if response.status_code != 200:
                 return None
-                
+
             comments = response.json().get("data", [])
             for comment in comments:
                 content = comment.get("content", "")
@@ -581,12 +587,13 @@ class FrappeCRMClient:
     def _parse_html_comment(self, html: str) -> CallIntelligence:
         """Parse the HTML comment string back into a CallIntelligence model."""
         import re
+
         from src.schemas import CallOutcome, LeadQuality, PrimaryObjection
-        
+
         def extract(label: str) -> str:
             match = re.search(rf"<li><b>{label}:</b>\s*(.*?)(?:</li>|<br>)", html, re.IGNORECASE | re.DOTALL)
             return match.group(1).strip() if match else ""
-            
+
         def extract_summary() -> str:
             match = re.search(r"<b>Summary:</b>\s*(.*?)(?:</p>|<br>)", html, re.IGNORECASE | re.DOTALL)
             return match.group(1).strip() if match else ""
@@ -599,7 +606,7 @@ class FrappeCRMClient:
         follow_up_str = extract("Follow-up At")
         notes_str = extract("Agent Quality Notes")
         summary_str = extract_summary()
-        
+
         # Phase 3 Fields
         objections_list_str = extract("Objections")
         rec_action_str = extract("Recommended Action")
@@ -607,23 +614,23 @@ class FrappeCRMClient:
         follow_up_date_str = extract("Follow-up Date")
         follow_up_notes_str = extract("Follow-up Notes")
         key_points_str = extract("Key Points")
-        
+
         # Parse Enum fields
         try:
             outcome = CallOutcome(outcome_str)
         except ValueError:
-            outcome = CallOutcome.UNKNOWN
-            
+            outcome = CallOutcome.OTHER
+
         try:
             quality = LeadQuality(lead_quality_str)
         except ValueError:
             quality = LeadQuality.UNKNOWN
-            
+
         try:
             objection = PrimaryObjection(objection_str)
         except ValueError:
             objection = PrimaryObjection.NONE
-            
+
         # Parse follow up date
         dt = None
         if follow_up_str and follow_up_str.lower() != "none":
@@ -631,14 +638,14 @@ class FrappeCRMClient:
                 dt = datetime.fromisoformat(follow_up_str)
             except ValueError:
                 pass
-                
+
         dt_new = None
         if follow_up_date_str and follow_up_date_str.lower() != "none":
             try:
                 dt_new = datetime.fromisoformat(follow_up_date_str)
             except ValueError:
                 pass
-                
+
         return CallIntelligence(
             call_summary=summary_str or "Summary extracted from timeline.",
             call_outcome=outcome,
@@ -648,7 +655,7 @@ class FrappeCRMClient:
             next_action=action_str,
             follow_up_at=dt,
             agent_quality_notes=notes_str,
-            
+
             # Phase 3
             key_points=[k.strip() for k in key_points_str.split(",")] if key_points_str and key_points_str != "None" else [],
             follow_up_required=(follow_up_req_str.lower() == "true"),
@@ -660,7 +667,7 @@ class FrappeCRMClient:
 
 
 
-def get_frappe_client(settings: Optional[Settings] = None) -> FrappeCRMClient:
+def get_frappe_client(settings: Settings | None = None) -> FrappeCRMClient:
     """Factory to retrieve Frappe CRM Client instance."""
     cfg = settings or get_settings()
     return FrappeCRMClient(

@@ -1,35 +1,42 @@
-from datetime import datetime
+import json
 import logging
 import os
+import re
 import uuid
-from typing import Optional
-from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, status
+from datetime import datetime
+
+from fastapi import (
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
 
 from src.config import get_settings
-from src.pipeline import get_pipeline
 from src.frappe_client import get_frappe_client
+from src.observability import (
+    AppError,
+    metrics,
+    request_id_ctx,
+    setup_structured_logging,
+)
+from src.pipeline import get_pipeline
 from src.schemas import (
     CallDirection,
+    CallIntelligence,
     CallStatus,
+    DashboardCallFeedResponse,
+    DashboardMetricsResponse,
     PipelineResponse,
     TelephonyWebhookPayload,
-    DashboardMetricsResponse,
-    DashboardCallFeedResponse,
-    CallIntelligence,
-)
-
-import json
-import re
-from fastapi import Request, Response
-from src.observability import (
-    setup_structured_logging,
-    request_id_ctx,
-    metrics,
-    AppError,
-    ErrorClassification,
 )
 
 settings = get_settings()
@@ -85,7 +92,7 @@ async def serve_dashboard():
     dashboard_path = os.path.join(static_dir, "dashboard.html")
     if not os.path.exists(dashboard_path):
         return HTMLResponse(content="<h1>Dashboard UI not found</h1><p>Please create src/static/dashboard.html.</p>", status_code=404)
-    with open(dashboard_path, "r", encoding="utf-8") as f:
+    with open(dashboard_path, encoding="utf-8") as f:
         return HTMLResponse(content=f.read())
 
 
@@ -145,7 +152,7 @@ async def readiness_check():
             checks["storage_ready"] = True
         except Exception as exc:
             is_ready = False
-            reasons.append(f"SQLite idempotency database error: {str(exc)}")
+            reasons.append(f"SQLite idempotency database error: {exc!s}")
     else:
         checks["storage_ready"] = True
 
@@ -184,7 +191,7 @@ async def telephony_webhook(payload: TelephonyWebhookPayload):
         f"Received webhook for call '{payload.provider_call_id}'",
         extra={"call_id": payload.provider_call_id, "request_id": req_id},
     )
-    
+
     if payload.provider_call_id.startswith("MOCK-") and not settings.mock_mode:
         metrics.record_error("validation_error")
         raise HTTPException(
@@ -206,7 +213,7 @@ async def telephony_webhook(payload: TelephonyWebhookPayload):
         raise HTTPException(
             status_code=app_err.status_code,
             detail=app_err.message,
-        )
+        ) from app_err
     except HTTPException:
         metrics.increment("pipeline_failed_total")
         raise
@@ -220,8 +227,8 @@ async def telephony_webhook(payload: TelephonyWebhookPayload):
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Pipeline processing failed: {str(exc)}",
-        )
+            detail=f"Pipeline processing failed: {exc!s}",
+        ) from exc
 
 
 # Audio upload security constants (SEC-06)
@@ -253,13 +260,13 @@ ALLOWED_AUDIO_MIME_TYPES = {
 async def process_audio(
     file: UploadFile = File(..., description="Audio recording file (WAV, MP3, M4A)"),
     lead_phone: str = Form(..., description="Lead phone number for CRM linking"),
-    agent_id: Optional[str] = Form(default="jeffinpappachan110@gmail.com"),
-    direction: Optional[CallDirection] = Form(default=CallDirection.OUTBOUND),
-    duration_seconds: Optional[int] = Form(default=60),
-    provider_call_id: Optional[str] = Form(default=None),
+    agent_id: str | None = Form(default="jeffinpappachan110@gmail.com"),
+    direction: CallDirection | None = Form(default=CallDirection.OUTBOUND),
+    duration_seconds: int | None = Form(default=60),
+    provider_call_id: str | None = Form(default=None),
 ):
     """Accept an uploaded audio recording and run speech-to-text, LLM extraction, and CRM sync.
-    
+
     Enforces maximum 25 MB file size, MIME type and extension validation, and rejects empty files (SEC-06).
     """
     call_id = provider_call_id or f"manual_{uuid.uuid4().hex[:12]}"
@@ -352,7 +359,7 @@ async def process_audio(
         raise HTTPException(
             status_code=app_err.status_code,
             detail=app_err.message,
-        )
+        ) from app_err
     except HTTPException:
         raise
     except Exception as exc:
@@ -365,8 +372,8 @@ async def process_audio(
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Audio processing failed: {str(exc)}",
-        )
+            detail=f"Audio processing failed: {exc!s}",
+        ) from exc
 
 
 @app.get(
@@ -381,7 +388,7 @@ async def get_dashboard_metrics():
         calls = await frappe.get_recent_call_logs(limit=200)
     else:
         calls = get_pipeline().idempotency_store.get_all()
-    
+
     total = len(calls)
     if total == 0:
         return DashboardMetricsResponse()
@@ -396,7 +403,7 @@ async def get_dashboard_metrics():
     call_outcome_distribution = {}
     follow_ups_due = 0
     follow_ups_overdue = 0
-    
+
     # We need timezone aware datetime if follow_up_at is timezone aware.
     # The models use standard datetime, which we'll treat naively for simplicity, or use UTC if possible.
     # We will just use timezone-naive datetime.now() for simplicity if the mock follow ups are naive.
@@ -406,14 +413,14 @@ async def get_dashboard_metrics():
     for c in calls:
         agent = c.agent_id or "Unknown"
         calls_per_telecaller[agent] = calls_per_telecaller.get(agent, 0) + 1
-        
+
         if c.intelligence:
             outcome = c.intelligence.call_outcome.value
             call_outcome_distribution[outcome] = call_outcome_distribution.get(outcome, 0) + 1
-            
+
             quality = c.intelligence.lead_quality.value
             lead_quality_distribution[quality] = lead_quality_distribution.get(quality, 0) + 1
-            
+
             if c.intelligence.follow_up_at:
                 # To compare safely, make `now` aware if follow_up_at is aware
                 if c.intelligence.follow_up_at.tzinfo:
@@ -453,7 +460,7 @@ async def get_dashboard_calls():
         calls = await frappe.get_recent_call_logs(limit=50)
     else:
         calls = get_pipeline().idempotency_store.get_all()
-        
+
     # Sort by timestamp descending
     calls.sort(
         key=lambda c: c.event_timestamp.timestamp() if c.event_timestamp else 0,
@@ -486,7 +493,7 @@ async def get_call_intelligence(call_id: str):
 
 
 @app.get("/api/models", tags=["Configuration"], summary="List Safe Supported AI Models")
-async def get_groq_models(x_admin_token: Optional[str] = Header(None, alias="X-Admin-Token")):
+async def get_groq_models(x_admin_token: str | None = Header(None, alias="X-Admin-Token")):
     """List available AI models with safe public metadata only.
 
     Secrets, API tokens, and internal provider headers are never returned.
@@ -527,7 +534,7 @@ async def get_groq_models(x_admin_token: Optional[str] = Header(None, alias="X-A
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Error communicating with upstream AI model provider",
-        )
+        ) from exc
 
     # SEC-01: Filter strictly to safe fields; never expose headers or raw payload
     safe_models = []

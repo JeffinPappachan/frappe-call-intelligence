@@ -1,4 +1,5 @@
 import pytest
+
 from src.pipeline import CallIntelligencePipeline, InMemoryIdempotencyStore
 from src.schemas import CallDirection, CallStatus, TelephonyWebhookPayload
 

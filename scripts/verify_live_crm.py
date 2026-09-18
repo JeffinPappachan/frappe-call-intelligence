@@ -11,9 +11,9 @@ Verifies:
 """
 
 import asyncio
-from datetime import datetime, timezone
 import os
 import sys
+from datetime import datetime, UTC
 
 # Ensure project root is in python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -68,7 +68,7 @@ async def main():
     print(f"[PASS] Matched Lead: {lead_name} ({lead_id}) | Owner: {lead_owner}")
 
     # 2. Prepare Sample Call Event & Intelligence
-    unique_call_id = f"live_verify_call_{int(datetime.now(timezone.utc).timestamp())}"
+    unique_call_id = f"live_verify_call_{int(datetime.now(UTC).timestamp())}"
     event = TelephonyWebhookPayload(
         provider_call_id=unique_call_id,
         telephony_provider="exotel",
@@ -93,7 +93,7 @@ async def main():
         primary_objection=PrimaryObjection.PRICE,
         customer_intent="Evaluate performance creative tier pricing relative to available marketing budget",
         next_action="Email standard pricing breakdown and confirm strategy head walkthrough slot",
-        follow_up_at=datetime.now(timezone.utc).replace(hour=15, minute=0, second=0, microsecond=0),
+        follow_up_at=datetime.now(UTC).replace(hour=15, minute=0, second=0, microsecond=0),
         agent_quality_notes="Excellent pacing, acknowledged budget constraints without discounting, locked in firm follow-up.",
         review_flag=False,
     )

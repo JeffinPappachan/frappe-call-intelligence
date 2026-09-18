@@ -1,18 +1,18 @@
+# Standard context variable to hold active request ID per async execution context
+import contextvars
+from enum import Enum
 import json
 import logging
 import sys
-import time
-from typing import Any, Dict, Optional
-
-# Standard context variable to hold active request ID per async execution context
-import contextvars
+import threading
+from typing import Any
 
 request_id_ctx: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="-")
 
 
 class RedactingJsonFormatter(logging.Formatter):
     """Structured JSON formatter with automated redaction of sensitive credentials.
-    
+
     Ensures that secrets, authorization tokens, full transcripts, and sensitive
     payloads are never leaked into log aggregators.
     """
@@ -32,7 +32,7 @@ class RedactingJsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         req_id = getattr(record, "request_id", None) or request_id_ctx.get("-")
-        log_entry: Dict[str, Any] = {
+        log_entry: dict[str, Any] = {
             "timestamp": self.formatTime(record, self.datefmt),
             "level": record.levelname,
             "logger": record.name,
@@ -88,6 +88,7 @@ def setup_structured_logging(log_level: str = "INFO", log_format: str = "json") 
         root_logger.removeHandler(handler)
 
     console_handler = logging.StreamHandler(sys.stdout)
+    formatter: logging.Formatter
     if log_format.lower() == "json":
         formatter = RedactingJsonFormatter(datefmt="%Y-%m-%dT%H:%M:%S%z")
     else:
@@ -100,18 +101,16 @@ def setup_structured_logging(log_level: str = "INFO", log_format: str = "json") 
     root_logger.addHandler(console_handler)
 
 
-import threading
-
 class MetricsCollector:
     """Thread-safe in-memory application metrics tracker.
-    
+
     Tracks pipeline operational health, status rates, durations, and error classifications
     without unbounded label cardinality or PII exposure.
     """
 
     def __init__(self):
         self._lock = threading.RLock()
-        self._counters: Dict[str, int] = {
+        self._counters: dict[str, int] = {
             "total_requests": 0,
             "pipeline_success_total": 0,
             "pipeline_failed_total": 0,
@@ -123,7 +122,7 @@ class MetricsCollector:
             "idempotent_duplicate_total": 0,
             "audio_upload_validation_failures_total": 0,
         }
-        self._errors_by_class: Dict[str, int] = {}
+        self._errors_by_class: dict[str, int] = {}
         self._total_duration_ms: float = 0.0
         self._duration_count: int = 0
 
@@ -142,7 +141,7 @@ class MetricsCollector:
             self._total_duration_ms += duration_ms
             self._duration_count += 1
 
-    def get_metrics(self) -> Dict[str, Any]:
+    def get_metrics(self) -> dict[str, Any]:
         with self._lock:
             avg_duration = (
                 round(self._total_duration_ms / self._duration_count, 2)
@@ -168,8 +167,6 @@ class MetricsCollector:
 metrics = MetricsCollector()
 
 
-from enum import Enum
-
 class ErrorClassification(str, Enum):
     VALIDATION_ERROR = "validation_error"
     AUTHENTICATION_ERROR = "authentication_error"
@@ -192,7 +189,7 @@ class AppError(Exception):
         error_class: ErrorClassification = ErrorClassification.UNEXPECTED_ERROR,
         status_code: int = 500,
         retryable: bool = False,
-        internal_detail: Optional[str] = None,
+        internal_detail: str | None = None,
     ):
         super().__init__(message)
         self.message = message

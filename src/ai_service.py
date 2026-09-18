@@ -1,7 +1,6 @@
-from abc import ABC, abstractmethod
-from datetime import datetime, timedelta, timezone
 import logging
-from typing import Optional
+from abc import ABC, abstractmethod
+from datetime import datetime, timedelta, UTC
 
 from src.config import Settings, get_settings
 from src.schemas import CallIntelligence, CallOutcome, LeadQuality, PrimaryObjection
@@ -13,19 +12,18 @@ class AIService(ABC):
     """Abstract interface for LLM Structured Call Intelligence extraction."""
 
     @abstractmethod
-    async def analyze_call(self, transcript: str, metadata: Optional[dict] = None) -> CallIntelligence:
+    async def analyze_call(self, transcript: str, metadata: dict | None = None) -> CallIntelligence:
         """Analyze a call transcript and extract structured business intelligence."""
-        pass
 
 
 class MockAIService(AIService):
     """Mock LLM provider returning realistic structured intelligence validated by Pydantic."""
 
-    async def analyze_call(self, transcript: str, metadata: Optional[dict] = None) -> CallIntelligence:
+    async def analyze_call(self, transcript: str, metadata: dict | None = None) -> CallIntelligence:
         logger.info("[MockAIService] Generating mock structured intelligence (Simulation mode active)")
 
         # Target a realistic follow-up time (e.g. upcoming Friday at 15:00 UTC)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         days_ahead = (4 - now.weekday()) % 7
         if days_ahead == 0:
             days_ahead = 7
@@ -71,9 +69,10 @@ class RealAIService(AIService):
         self.provider = provider
         self.api_key = api_key
 
-    async def analyze_call(self, transcript: str, metadata: Optional[dict] = None) -> CallIntelligence:
-        import httpx
+    async def analyze_call(self, transcript: str, metadata: dict | None = None) -> CallIntelligence:
         import json
+
+        import httpx
 
         if not self.api_key:
             raise ValueError("AI API key is not configured.")
@@ -86,7 +85,7 @@ class RealAIService(AIService):
 
         url = "https://api.openai.com/v1/chat/completions"
         model_name = "gpt-4o-mini"
-        
+
         if self.provider == "groq":
             url = "https://api.groq.com/openai/v1/chat/completions"
             model_name = "openai/gpt-oss-20b"
@@ -95,9 +94,9 @@ class RealAIService(AIService):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
-        
+
         schema_info = CallIntelligence.model_json_schema()
-        
+
         data = {
             "model": model_name,
             "messages": [
@@ -113,10 +112,10 @@ class RealAIService(AIService):
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(url, headers=headers, json=data)
                 response.raise_for_status()
-                
+
                 content = response.json()["choices"][0]["message"]["content"]
                 return CallIntelligence.model_validate_json(content)
-                
+
         except httpx.HTTPStatusError as exc:
             logger.error(f"[RealAIService] HTTP Error: {exc.response.text}")
             raise ValueError(f"Groq API Error: {exc.response.text}") from exc
@@ -125,7 +124,7 @@ class RealAIService(AIService):
             raise
 
 
-def get_ai_service(settings: Optional[Settings] = None) -> AIService:
+def get_ai_service(settings: Settings | None = None) -> AIService:
     """Factory to retrieve configured AI intelligence provider."""
     cfg = settings or get_settings()
     if cfg.mock_mode or cfg.ai_provider == "mock" or not cfg.ai_api_key:

@@ -1,10 +1,12 @@
-import pytest
-from unittest.mock import AsyncMock, patch
-from fastapi.testclient import TestClient
-import httpx
+from unittest.mock import patch
 
-from src.server import app
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+
 from src.config import get_settings
+from src.frappe_client import FrappeCRMClient
+from src.pipeline import CallIntelligencePipeline
 from src.schemas import (
     CallDirection,
     CallIntelligence,
@@ -13,8 +15,7 @@ from src.schemas import (
     LeadQuality,
     TelephonyWebhookPayload,
 )
-from src.frappe_client import FrappeCRMClient
-from src.pipeline import CallIntelligencePipeline
+from src.server import app
 
 client = TestClient(app)
 

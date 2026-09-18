@@ -1,17 +1,18 @@
-import pytest
 from datetime import datetime, timedelta
+
+import pytest
 from fastapi.testclient import TestClient
 
-from src.server import app
-from src.pipeline import get_pipeline
 from src.config import get_settings
+from src.pipeline import get_pipeline
 from src.schemas import (
-    PipelineResponse,
     CallIntelligence,
     CallOutcome,
     LeadQuality,
+    PipelineResponse,
     PrimaryObjection,
 )
+from src.server import app
 
 client = TestClient(app)
 
@@ -21,11 +22,11 @@ def reset_pipeline():
     settings = get_settings()
     original_mode = settings.mock_mode
     settings.mock_mode = True
-    
+
     import src.server
     original_server_mode = src.server.settings.mock_mode
     src.server.settings.mock_mode = True
-    
+
     pipeline = get_pipeline()
     pipeline.idempotency_store.clear()
     yield
@@ -39,14 +40,14 @@ def test_empty_analytics():
     data = response.json()
     assert data["total_calls"] == 0
     assert data["completed_calls"] == 0
-    
+
     response2 = client.get("/api/v1/dashboard/calls")
     assert response2.status_code == 200
     assert response2.json()["calls"] == []
 
 def test_populated_analytics():
     pipeline = get_pipeline()
-    
+
     # Mock some data
     intelligence1 = CallIntelligence(
         call_summary="Test 1",
@@ -59,7 +60,7 @@ def test_populated_analytics():
         agent_quality_notes="Good",
         review_flag=False,
     )
-    
+
     call1 = PipelineResponse(
         success=True,
         provider_call_id="call-1",
@@ -69,7 +70,7 @@ def test_populated_analytics():
         event_timestamp=datetime.now() - timedelta(minutes=5),
         agent_id="Agent Smith",
     )
-    
+
     intelligence2 = CallIntelligence(
         call_summary="Test 2",
         call_outcome=CallOutcome.NOT_INTERESTED,
@@ -81,7 +82,7 @@ def test_populated_analytics():
         agent_quality_notes="Poor",
         review_flag=True,
     )
-    
+
     call2 = PipelineResponse(
         success=False,
         provider_call_id="call-2",
@@ -91,10 +92,10 @@ def test_populated_analytics():
         event_timestamp=datetime.now() - timedelta(minutes=10),
         agent_id="Agent Neo",
     )
-    
+
     pipeline.idempotency_store.set("call-1", call1)
     pipeline.idempotency_store.set("call-2", call2)
-    
+
     response = client.get("/api/v1/dashboard/metrics")
     assert response.status_code == 200
     data = response.json()
@@ -102,19 +103,19 @@ def test_populated_analytics():
     assert data["completed_calls"] == 1
     assert data["missed_calls"] == 1
     assert data["average_call_duration_seconds"] == 90.0
-    
+
     assert data["calls_per_telecaller"]["Agent Smith"] == 1
     assert data["calls_per_telecaller"]["Agent Neo"] == 1
-    
+
     assert data["lead_quality_distribution"]["Hot"] == 1
     assert data["lead_quality_distribution"]["Cold"] == 1
-    
+
     assert data["call_outcome_distribution"]["Follow-up"] == 1
     assert data["call_outcome_distribution"]["Not Interested"] == 1
-    
+
     assert data["follow_ups_due"] == 1
     assert data["follow_ups_overdue"] == 1
-    
+
     response2 = client.get("/api/v1/dashboard/calls")
     assert response2.status_code == 200
     calls = response2.json()["calls"]
@@ -126,12 +127,12 @@ def test_populated_analytics():
 def test_frappe_comment_parsing():
     from src.frappe_client import FrappeCRMClient
     from src.schemas import CallOutcome, LeadQuality, PrimaryObjection
-    
+
     client = FrappeCRMClient(mock_mode=True)
     html = """
     <div><h4>AI Call Intelligence Analysis <span style="color:green;">[Verified]</span></h4><p><b>Summary:</b> Customer was very interested in the product.</p><ul><li><b>Outcome:</b> Follow-up</li><li><b>Lead Quality:</b> Warm</li><li><b>Customer Intent:</b> Buy</li><li><b>Primary Objection:</b> Price</li><li><b>Next Action:</b> Send pricing</li><li><b>Follow-up At:</b> 2026-09-18T10:00:00+00:00</li><li><b>Agent Quality Notes:</b> Good job</li><li><b>Follow-up Required:</b> True</li><li><b>Objections:</b> Price, Competitor</li><li><b>Recommended Action:</b> Schedule follow-up</li><li><b>Key Points:</b> Budget is tight, Interested in scaling</li></ul></div>
     """
-    
+
     intel = client._parse_html_comment(html)
     assert intel.call_summary == "Customer was very interested in the product."
     assert intel.call_outcome == CallOutcome.FOLLOW_UP
@@ -142,7 +143,7 @@ def test_frappe_comment_parsing():
     assert intel.agent_quality_notes == "Good job"
     assert intel.follow_up_at is not None
     assert intel.follow_up_at.isoformat() == "2026-09-18T10:00:00+00:00"
-    
+
     # Phase 3
     assert intel.follow_up_required is True
     assert intel.objections == ["Price", "Competitor"]
@@ -152,7 +153,7 @@ def test_frappe_comment_parsing():
 def test_get_call_intelligence_endpoint():
     pipeline = get_pipeline()
     pipeline.idempotency_store.clear()
-    
+
     intelligence1 = CallIntelligence(
         call_summary="Test Endpoint",
         call_outcome=CallOutcome.FOLLOW_UP,
@@ -166,7 +167,7 @@ def test_get_call_intelligence_endpoint():
         agent_quality_notes="Good",
         review_flag=False,
     )
-    
+
     call1 = PipelineResponse(
         success=True,
         provider_call_id="call-int-1",
@@ -176,9 +177,9 @@ def test_get_call_intelligence_endpoint():
         event_timestamp=datetime.now(),
         agent_id="Agent Smith",
     )
-    
+
     pipeline.idempotency_store.set("call-int-1", call1)
-    
+
     # Successful fetch
     res = client.get("/api/v1/dashboard/calls/call-int-1/intelligence")
     assert res.status_code == 200
@@ -186,7 +187,7 @@ def test_get_call_intelligence_endpoint():
     assert data["call_summary"] == "Test Endpoint"
     assert data["follow_up_required"] is True
     assert data["follow_up_notes"] == "Need to send pricing"
-    
+
     # Not found
     res2 = client.get("/api/v1/dashboard/calls/call-missing/intelligence")
     assert res2.status_code == 404

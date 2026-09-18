@@ -1,0 +1,29 @@
+line-length = 120
+target-version = "py311"
+
+[lint]
+# Select core standard rules
+select = [
+    "E",    # pycodestyle errors
+    "F",    # Pyflakes
+    "W",    # pycodestyle warnings
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "RUF",  # Ruff-specific rules
+]
+
+# Standard exclusions for FastAPI framework patterns & existing project conventions:
+# - B008: FastAPI parameter defaults use File(), Form(), Depends(), Header()
+# - E501: Line length managed by formatting
+# - RUF012: Mutable class attributes on mock data / collections
+# - UP042: Class inherits from str and Enum (standard Pydantic v2 pattern)
+ignore = [
+    "B008",
+    "E501",
+    "RUF012",
+    "UP042",
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["S101", "RUF012"]
+
