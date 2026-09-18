@@ -4,6 +4,7 @@ import os
 import re
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import (
     FastAPI,
@@ -80,20 +81,19 @@ async def request_correlation_middleware(request: Request, call_next):
         request_id_ctx.reset(token)
 
 
-# Mount static files
-static_dir = os.path.join(os.path.dirname(__file__), "static")
-os.makedirs(static_dir, exist_ok=True)
-app.mount("/static", StaticFiles(directory=static_dir), name="static")
+# Mount static files for the React frontend
+frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
+if frontend_dist.exists():
+    app.mount("/assets", StaticFiles(directory=str(frontend_dist / "assets")), name="assets")
 
 
-@app.get("/dashboard", response_class=HTMLResponse, tags=["Dashboard"], summary="Serve Manager Dashboard")
-async def serve_dashboard():
-    """Serves the Manager Call Intelligence Dashboard UI."""
-    dashboard_path = os.path.join(static_dir, "dashboard.html")
-    if not os.path.exists(dashboard_path):
-        return HTMLResponse(content="<h1>Dashboard UI not found</h1><p>Please create src/static/dashboard.html.</p>", status_code=404)
-    with open(dashboard_path, encoding="utf-8") as f:
-        return HTMLResponse(content=f.read())
+@app.get("/dashboard", response_class=HTMLResponse, tags=["UI"])
+async def dashboard_ui():
+    """Serve the React frontend dashboard."""
+    index_file = frontend_dist / "index.html"
+    if not index_file.exists():
+        return HTMLResponse("<h1>Frontend not built. Please run 'npm run build' in the frontend directory.</h1>", status_code=404)
+    return index_file.read_text(encoding="utf-8")
 
 
 @app.get("/health", tags=["Monitoring"])
