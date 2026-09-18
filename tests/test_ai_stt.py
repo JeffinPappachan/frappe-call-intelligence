@@ -9,9 +9,9 @@ from src.stt_service import MockSTTService
 async def test_mock_stt_english():
     stt = MockSTTService()
     transcript = await stt.transcribe("sample_call.wav")
-    assert "Hash Adz" in transcript
-    assert "Carol" in transcript
-    assert "John" in transcript
+    assert "course" in transcript.lower()
+    assert "fees" in transcript.lower()
+    assert "BrightPath" not in transcript
 
 
 @pytest.mark.asyncio
@@ -19,7 +19,8 @@ async def test_mock_stt_malayalam():
     stt = MockSTTService()
     transcript = await stt.transcribe("dummy_path", filename="sample_call_malayalam.wav")
     assert "Namaskaram" in transcript
-    assert "marketing campaign" in transcript
+    assert "fees" in transcript.lower()
+    assert "BrightPath" not in transcript
 
 
 @pytest.mark.asyncio

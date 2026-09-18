@@ -1,5 +1,7 @@
 import logging
+import os
 from abc import ABC, abstractmethod
+from typing import Any
 
 from src.config import Settings, get_settings
 
@@ -10,7 +12,12 @@ class STTService(ABC):
     """Abstract interface for Speech-to-Text transcription services."""
 
     @abstractmethod
-    async def transcribe(self, audio_source: str | bytes, filename: str | None = None) -> str:
+    async def transcribe(
+        self,
+        audio_source: str | bytes,
+        filename: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
         """Transcribe audio from a local file path, URL, or raw bytes."""
 
 
@@ -18,24 +25,25 @@ class MockSTTService(STTService):
     """Mock STT provider for offline testing and initial scaffolding."""
 
     DEFAULT_TRANSCRIPT = (
-        "Agent: Hello, this is John calling from Hash Adz Creative Solutions. Am I speaking with Carol?\n"
-        "Customer: Yes, speaking. What is this regarding?\n"
-        "Agent: I'm following up on your inquiry regarding our performance marketing and social media creative packages for BrightPath Ltd.\n"
-        "Customer: Oh yes! We are looking to scale our digital ad campaigns next quarter, but our budget is somewhat tight right now. Could you share your pricing and case studies?\n"
-        "Agent: Absolutely! I can send over our standard tier breakdown and schedule a detailed walkthrough with our strategy head. Would this Friday at 3 PM work for you?\n"
-        "Customer: Friday at 3 PM sounds perfect. Please email the details before then.\n"
-        "Agent: Will do, Carol. Thank you for your time, and have a great day!"
+        "Agent: Hello, are you interested in our course?\n"
+        "Customer: Yes, I would like to know the fees.\n"
+        "Agent: I can send you the details tomorrow.\n"
+        "Customer: Okay, please call me tomorrow."
     )
 
     MALAYALAM_TRANSCRIPT = (
-        "Agent: Namaskaram, Hash Adz-il ninnum John aanu vilikkunnathu. Carol-nodano samsarikkunnathu?\n"
-        "Customer: Athe, parayu. Entha kaaryam?\n"
-        "Agent: Njangalude digital marketing packages-ne patti inquiry cheythirunnu. Athine kurichu discuss cheyyaan aanu vilichathu.\n"
-        "Customer: Njangalkku marketing campaign thudangaan aagrahomundu. Pakshe budget koncham tight aanu. Details email cheyyaamo? Friday 3 PM-nu vilichaal kollam.\n"
-        "Agent: Theerchayaayum, Friday 3 PM-nu follow-up call schedule cheyyaam. Thank you!"
+        "Agent: Namaskaram, course-ne patti ariyamo?\n"
+        "Customer: Athe, fees details ariyarnnu.\n"
+        "Agent: Naale details ayachu tharam.\n"
+        "Customer: Serry, naale vilikku."
     )
 
-    async def transcribe(self, audio_source: str | bytes, filename: str | None = None) -> str:
+    async def transcribe(
+        self,
+        audio_source: str | bytes,
+        filename: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
         logger.info("[MockSTTService] Generating mock transcription (Simulation mode active)")
         if filename and ("malayalam" in filename.lower() or "manglish" in filename.lower()):
             return self.MALAYALAM_TRANSCRIPT
@@ -43,19 +51,27 @@ class MockSTTService(STTService):
 
 
 class RealSTTService(STTService):
-    """Real STT provider using OpenAI Whisper API."""
+    """Real STT provider using OpenAI Whisper API or Groq Whisper API."""
 
     def __init__(self, provider: str, api_key: str):
         self.provider = provider
         self.api_key = api_key
 
-    async def transcribe(self, audio_source: str | bytes, filename: str | None = None) -> str:
-        import os
-
+    async def transcribe(
+        self,
+        audio_source: str | bytes,
+        filename: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
         import httpx
 
         if not self.api_key:
-            raise ValueError("STT API key is not configured.")
+            raise ValueError(
+                "Speech-to-text is not configured. Please configure the STT provider or explicitly enable mock mode."
+            )
+
+        meta = metadata or {}
+        call_id = meta.get("call_id", "unknown")
 
         # Determine if we have a file path or raw bytes
         if isinstance(audio_source, str):
@@ -67,6 +83,31 @@ class RealSTTService(STTService):
         else:
             file_bytes = audio_source
             name = filename or "audio.wav"
+
+        audio_size = len(file_bytes)
+        ext = os.path.splitext(name)[1].lower()
+        mime_map = {
+            ".wav": "audio/wav",
+            ".mp3": "audio/mpeg",
+            ".m4a": "audio/m4a",
+            ".mp4": "audio/mp4",
+            ".ogg": "audio/ogg",
+            ".webm": "audio/webm",
+            ".flac": "audio/flac",
+        }
+        content_type = mime_map.get(ext, "audio/wav")
+
+        logger.info(
+            f"Initiating STT transcription for call '{call_id}'",
+            extra={
+                "call_id": call_id,
+                "uploaded_filename": name,
+                "audio_content_type": content_type,
+                "audio_size": audio_size,
+                "stt_provider": self.provider,
+                "transcription_status": "in_progress",
+            },
+        )
 
         url = "https://api.openai.com/v1/audio/transcriptions"
         model_name = "whisper-1"
@@ -80,7 +121,7 @@ class RealSTTService(STTService):
         }
 
         files = {
-            "file": (name, file_bytes, "audio/mpeg"),
+            "file": (name, file_bytes, content_type),
         }
         data = {
             "model": model_name,
@@ -91,15 +132,47 @@ class RealSTTService(STTService):
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(url, headers=headers, files=files, data=data)
                 response.raise_for_status()
-                return response.json().get("text", "")
+                text = (response.json().get("text") or "").strip()
+
+                if not text:
+                    raise ValueError("Speech-to-text provider returned an empty transcript.")
+
+                logger.info(
+                    f"STT transcription successful for call '{call_id}'",
+                    extra={
+                        "call_id": call_id,
+                        "uploaded_filename": name,
+                        "audio_content_type": content_type,
+                        "audio_size": audio_size,
+                        "stt_provider": self.provider,
+                        "transcription_status": "success",
+                        "transcript_length": len(text),
+                    },
+                )
+                return text
         except Exception as exc:
-            logger.error(f"[RealSTTService] Transcription failed: {exc}")
+            logger.error(
+                f"STT transcription failed for call '{call_id}': {exc}",
+                extra={
+                    "call_id": call_id,
+                    "uploaded_filename": name,
+                    "audio_content_type": content_type,
+                    "audio_size": audio_size,
+                    "stt_provider": self.provider,
+                    "transcription_status": "failed",
+                },
+            )
             raise
 
 
 def get_stt_service(settings: Settings | None = None) -> STTService:
     """Factory to retrieve configured STT provider."""
     cfg = settings or get_settings()
-    if cfg.mock_mode or cfg.stt_provider == "mock" or not cfg.stt_api_key:
+    if cfg.mock_mode or cfg.stt_provider == "mock":
         return MockSTTService()
+    if not cfg.stt_api_key:
+        raise ValueError(
+            "Speech-to-text is not configured. Please configure the STT provider or explicitly enable mock mode."
+        )
     return RealSTTService(provider=cfg.stt_provider, api_key=cfg.stt_api_key)
+

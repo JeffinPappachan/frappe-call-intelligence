@@ -43,7 +43,7 @@ class Settings(BaseSettings):
         "http://127.0.0.1:8000",
         "http://localhost:3000",
     ]
-    store_transcript_in_crm: Literal["full", "truncated", "none"] = "truncated"
+    store_transcript_in_crm: Literal["full", "truncated", "none"] = "full"
     admin_api_token: str = ""
 
     # Reliability & Idempotency Store

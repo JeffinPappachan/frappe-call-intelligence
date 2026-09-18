@@ -366,7 +366,18 @@ class CallIntelligencePipeline:
         stt_status = "pending"
         try:
             audio_source = raw_audio or event.recording_url or "mock_call.wav"
-            transcript = await self.stt_service.transcribe(audio_source=audio_source, filename=audio_filename)
+            stt_meta = {
+                "call_id": call_id,
+                "audio_filename": audio_filename,
+                "telephony_provider": event.telephony_provider,
+            }
+            transcript = await self.stt_service.transcribe(
+                audio_source=audio_source,
+                filename=audio_filename,
+                metadata=stt_meta,
+            )
+            if not transcript or not transcript.strip():
+                raise ValueError("Transcription result is empty.")
             stt_status = "success"
         except Exception as exc:
             stt_status = "failed"
@@ -385,9 +396,14 @@ class CallIntelligencePipeline:
         # 3. LLM Structured Intelligence Analysis
         llm_status = "pending"
         try:
+            ai_meta = {
+                "call_id": call_id,
+                "provider": event.telephony_provider,
+                "event_timestamp": event.event_timestamp.isoformat() if event.event_timestamp else datetime.now().isoformat(),
+            }
             intelligence = await self.ai_service.analyze_call(
                 transcript=transcript,
-                metadata={"call_id": call_id, "provider": event.telephony_provider},
+                metadata=ai_meta,
             )
             llm_status = "success"
         except Exception as exc:

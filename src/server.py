@@ -329,6 +329,24 @@ async def process_audio(
 
         audio_bytes = b"".join(chunks)
 
+        # 5. Detect actual audio duration from file content
+        detected_duration = duration_seconds  # fall back to user-provided or default
+        try:
+            import io
+            import mutagen
+            audio_file = mutagen.File(io.BytesIO(audio_bytes))
+            if audio_file is not None and audio_file.info and audio_file.info.length:
+                detected_duration = int(audio_file.info.length)
+                logger.info(
+                    f"Detected audio duration: {detected_duration}s for '{filename}'",
+                    extra={"call_id": call_id, "request_id": req_id},
+                )
+        except Exception as exc:
+            logger.warning(
+                f"Could not detect audio duration for '{filename}': {exc}",
+                extra={"call_id": call_id, "request_id": req_id},
+            )
+
         event = TelephonyWebhookPayload(
             provider_call_id=call_id,
             telephony_provider="manual_upload",
@@ -336,7 +354,7 @@ async def process_audio(
             to_number=lead_phone,
             direction=direction or CallDirection.OUTBOUND,
             call_status=CallStatus.COMPLETED,
-            duration_seconds=duration_seconds or 60,
+            duration_seconds=detected_duration or 60,
             recording_url=None,
             agent_id=agent_id,
             call_type="sales_enquiry",
@@ -385,9 +403,10 @@ async def get_dashboard_metrics():
     """Aggregate call metrics from the local idempotency store or live CRM."""
     if not settings.mock_mode:
         frappe = get_frappe_client()
-        calls = await frappe.get_recent_call_logs(limit=200)
+        calls = await frappe.get_recent_call_logs(limit=50)
     else:
         calls = get_pipeline().idempotency_store.get_all()
+
 
     total = len(calls)
     if total == 0:
@@ -476,20 +495,29 @@ async def get_dashboard_calls():
 )
 async def get_call_intelligence(call_id: str):
     """Retrieve detailed AI analysis for a specific call."""
+    pipeline = get_pipeline()
+    cached = pipeline.idempotency_store.get(call_id)
+    if cached and cached.intelligence:
+        return cached.intelligence
+
     if not settings.mock_mode:
         frappe = get_frappe_client()
         import httpx
         async with httpx.AsyncClient() as client:
-            intelligence = await frappe._fetch_and_parse_intelligence(call_id, client)
+            # If call_id is a provider_call_id, resolve Frappe CRM Call Log name
+            target_name = call_id
+            if not call_id.startswith("CALL-LOG-") and not call_id.startswith("CRM-"):
+                existing = await frappe.get_call_log_by_provider_id(call_id)
+                if existing and existing.get("name"):
+                    target_name = existing.get("name")
+
+            intelligence = await frappe._fetch_and_parse_intelligence(target_name, client)
             if not intelligence:
                 raise HTTPException(status_code=404, detail="Intelligence not found for this call")
             return intelligence
     else:
-        pipeline = get_pipeline()
-        cached = pipeline.idempotency_store.get(call_id)
-        if not cached or not cached.intelligence:
-            raise HTTPException(status_code=404, detail="Intelligence not found for this call")
-        return cached.intelligence
+        raise HTTPException(status_code=404, detail="Intelligence not found for this call")
+
 
 
 @app.get("/api/models", tags=["Configuration"], summary="List Safe Supported AI Models")

@@ -44,26 +44,46 @@ class MockAIService(AIService):
                 review_flag=False,
             )
 
-        # Default standard sales qualification response
+        # Check for course fee inquiry in transcript
+        if "course" in lower_transcript or "fees" in lower_transcript:
+            return CallIntelligence(
+                call_summary="Customer inquired about course fees and agreed to receive details tomorrow with a follow-up call.",
+                call_outcome=CallOutcome.FOLLOW_UP,
+                lead_quality=LeadQuality.WARM,
+                primary_objection=PrimaryObjection.NONE,
+                customer_intent="Obtain course fee information",
+                next_action="Send course fee details and call back tomorrow",
+                recommended_action="Send course fee details and call back tomorrow",
+                follow_up_required=True,
+                follow_up_date=None,
+                follow_up_notes="Customer requested callback tomorrow regarding course fees",
+                key_points=["Customer interested in course", "Requested fee details", "Agreed to follow-up call tomorrow"],
+                objections=[],
+                agent_quality_notes="Agent answered politely and scheduled a follow-up callback.",
+                review_flag=False,
+            )
+
+        # Default standard qualification response
         return CallIntelligence(
-            call_summary=(
-                "Telecaller followed up on marketing inquiry. Customer interested in scaling digital ad campaigns "
-                "next quarter but raised budget constraints. Requested pricing breakdown and case studies with a scheduled "
-                "walkthrough this Friday at 3 PM."
-            ),
+            call_summary="Telecaller connected with customer who requested further information via follow-up.",
             call_outcome=CallOutcome.FOLLOW_UP,
             lead_quality=LeadQuality.WARM,
-            primary_objection=PrimaryObjection.PRICE,
-            customer_intent="Explore digital ad packages and evaluate pricing relative to available budget",
-            next_action="Send standard tier pricing sheet and prepare for Friday 3 PM strategy walkthrough",
-            follow_up_at=target_follow_up,
-            agent_quality_notes="Clear pitch and good objection handling. Proactively proposed and locked in a firm follow-up slot.",
+            primary_objection=PrimaryObjection.NONE,
+            customer_intent="Obtain further information",
+            next_action="Follow up with requested details",
+            recommended_action="Follow up with requested details",
+            follow_up_required=True,
+            follow_up_date=None,
+            follow_up_notes="Customer requested follow-up with further details",
+            key_points=["Initial inquiry", "Follow-up requested"],
+            objections=[],
+            agent_quality_notes="Agent engaged professionally and agreed on next steps.",
             review_flag=False,
         )
 
 
 class RealAIService(AIService):
-    """Real LLM provider using OpenAI GPT via httpx."""
+    """Real LLM provider using OpenAI GPT or Groq via httpx."""
 
     def __init__(self, provider: str, api_key: str):
         self.provider = provider
@@ -75,12 +95,38 @@ class RealAIService(AIService):
         import httpx
 
         if not self.api_key:
-            raise ValueError("AI API key is not configured.")
+            raise ValueError(
+                "AI provider is not configured. Please configure the AI API key or explicitly enable mock mode."
+            )
+
+        meta = metadata or {}
+        event_time_str = meta.get("event_timestamp") or meta.get("call_time") or "Current Date/Time"
 
         system_prompt = (
             "You are an expert sales manager and AI call analyzer. Analyze the provided telecaller-customer transcript "
-            "and extract structured business intelligence. "
-            "You MUST output ONLY valid JSON matching the exact schema requirements without any markdown wrappers."
+            "and extract structured business intelligence based ONLY on the actual transcript text.\n"
+            "CRITICAL INSTRUCTIONS:\n"
+            "- Analyze only the supplied transcript.\n"
+            "- Do not use examples or context from previous calls or any demo scenarios (such as BrightPath Ltd, digital ad campaigns, Friday 3 PM, pricing sheet).\n"
+            "- Do not invent facts, companies, dates, or details not present in the transcript.\n"
+            "- Return null, an empty list ([]), or 'Unknown' when information is unavailable or unsupported by the transcript.\n"
+            "- If a detail or objection is not mentioned in the transcript, set objections to [] and primary_objection to 'None'.\n"
+            "- If follow-up is requested or agreed upon in the transcript (e.g. 'please call me tomorrow' or 'send details tomorrow'), set follow_up_required = true.\n"
+            "- If follow_up_required is false, set follow_up_at = null, follow_up_date = null, follow_up_notes = null.\n"
+            "- If follow-up is mentioned relatively (e.g. 'tomorrow') without a specific hour, do not invent an arbitrary time. "
+            "Leave follow_up_date as null unless an exact date/time can be confidently determined, and describe the callback request in follow_up_notes.\n"
+            "- Ensure the following fields are accurately generated from the actual transcript: summary (call_summary), customer_intent, outcome (call_outcome), "
+            "lead_quality, key_points, objections, recommended_action, review_flag, follow_up_required, follow_up_date, follow_up_notes, agent_quality_notes.\n"
+            "- Output strictly valid JSON matching the exact schema requirements without any markdown wrappers."
+        )
+
+        user_content = (
+            f"Analyze the following call transcript.\n\n"
+            f"Transcript:\n{transcript}\n\n"
+            f"Context Timestamp: {event_time_str}\n\n"
+            f"Return structured call intelligence based only on this transcript. "
+            f"Do not invent facts. Do not use examples from previous calls or demo data. "
+            f"If a field is not supported by the transcript, return null, an empty list, or 'Unknown' according to the schema."
         )
 
         url = "https://api.openai.com/v1/chat/completions"
@@ -101,7 +147,7 @@ class RealAIService(AIService):
             "model": model_name,
             "messages": [
                 {"role": "system", "content": system_prompt + f"\n\nJSON Schema:\n{json.dumps(schema_info)}"},
-                {"role": "user", "content": f"Transcript:\n{transcript}"}
+                {"role": "user", "content": user_content}
             ],
             "response_format": {"type": "json_object"},
             "temperature": 0.1
@@ -118,7 +164,7 @@ class RealAIService(AIService):
 
         except httpx.HTTPStatusError as exc:
             logger.error(f"[RealAIService] HTTP Error: {exc.response.text}")
-            raise ValueError(f"Groq API Error: {exc.response.text}") from exc
+            raise ValueError(f"AI API Error: {exc.response.text}") from exc
         except Exception as exc:
             logger.error(f"[RealAIService] Analysis failed: {exc}")
             raise
@@ -127,6 +173,11 @@ class RealAIService(AIService):
 def get_ai_service(settings: Settings | None = None) -> AIService:
     """Factory to retrieve configured AI intelligence provider."""
     cfg = settings or get_settings()
-    if cfg.mock_mode or cfg.ai_provider == "mock" or not cfg.ai_api_key:
+    if cfg.mock_mode or cfg.ai_provider == "mock":
         return MockAIService()
+    if not cfg.ai_api_key:
+        raise ValueError(
+            "AI provider is not configured. Please configure the AI API key or explicitly enable mock mode."
+        )
     return RealAIService(provider=cfg.ai_provider, api_key=cfg.ai_api_key)
+

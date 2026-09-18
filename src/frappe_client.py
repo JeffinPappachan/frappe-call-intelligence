@@ -404,7 +404,8 @@ class FrappeCRMClient:
         elif follow_up_at_val is not None:
             due_date_str = follow_up_at_val.strftime("%Y-%m-%d %H:%M:%S")
         else:
-            fallback_dt = datetime.now() + timedelta(days=2)
+            # When follow-up is required but no specific time was agreed, schedule next business day at 10:00 AM
+            fallback_dt = (datetime.now() + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
             due_date_str = fallback_dt.strftime("%Y-%m-%d %H:%M:%S")
 
         assigned_user = assigned_to or ""
@@ -509,6 +510,7 @@ class FrappeCRMClient:
 
     async def get_recent_call_logs(self, limit: int = 50) -> list[PipelineResponse]:
         """Fetch recent call logs from Frappe CRM and map to PipelineResponse for dashboard."""
+        import asyncio
         from src.schemas import PipelineResponse
 
         if self.mock_mode:
@@ -526,39 +528,45 @@ class FrappeCRMClient:
                 response.raise_for_status()
                 data = response.json().get("data", [])
 
-                results = []
-                for row in data:
-                    dt = None
-                    if row.get("start_time"):
-                        try:
-                            # Frappe returns format YYYY-MM-DD HH:MM:SS
-                            dt = datetime.strptime(row["start_time"].split(".")[0], "%Y-%m-%d %H:%M:%S")
-                        except Exception:
-                            dt = datetime.now()
+                sem = asyncio.Semaphore(10)
 
+                async def process_row(row: dict[str, Any]) -> PipelineResponse:
+                    async with sem:
+                        dt = None
+                        if row.get("start_time"):
+                            try:
+                                dt = datetime.strptime(row["start_time"].split(".")[0], "%Y-%m-%d %H:%M:%S")
+                            except Exception:
+                                dt = datetime.now()
 
-                    intel = await self._fetch_and_parse_intelligence(row.get("name"), client)
+                        intel_data = await self._fetch_and_parse_intelligence_and_transcript(row.get("name"), client)
+                        intel = intel_data.get("intelligence") if intel_data else None
+                        extracted_transcript = intel_data.get("transcript") if intel_data else None
 
-                    resp = PipelineResponse(
-                        success=(row.get("status") == "Completed"),
-                        provider_call_id=row.get("id") or row.get("name"),
-                        idempotent_replay=False,
-                        frappe_call_log_id=row.get("name"),
-                        duration_seconds=int(row.get("duration") or 0),
-                        event_timestamp=dt,
-                        agent_id=row.get("owner") or row.get("caller") or row.get("receiver"),
-                        matched_lead=row.get("reference_docname"),
-                        intelligence=intel,
-                        message="Fetched from Live Frappe CRM"
-                    )
-                    results.append(resp)
-                return results
+                        return PipelineResponse(
+                            success=(row.get("status") == "Completed"),
+                            provider_call_id=row.get("id") or row.get("name"),
+                            idempotent_replay=False,
+                            frappe_call_log_id=row.get("name"),
+                            duration_seconds=int(row.get("duration") or 0),
+                            event_timestamp=dt,
+                            agent_id=row.get("owner") or row.get("caller") or row.get("receiver"),
+                            matched_lead=row.get("reference_docname"),
+                            transcript=extracted_transcript,
+                            intelligence=intel,
+                            message="Fetched from Live Frappe CRM",
+                        )
+
+                return await asyncio.gather(*(process_row(row) for row in data))
         except Exception as exc:
             logger.error(f"[FrappeCRMClient] Error fetching recent call logs: {exc}")
             return []
 
-    async def _fetch_and_parse_intelligence(self, call_log_name: str, client: httpx.AsyncClient) -> CallIntelligence | None:
-        """Fetch Timeline Comments for a Call Log and parse out the structured CallIntelligence data."""
+
+    async def _fetch_and_parse_intelligence_and_transcript(
+        self, call_log_name: str, client: httpx.AsyncClient
+    ) -> dict[str, Any] | None:
+        """Fetch Timeline Comments for a Call Log and parse out both intelligence and transcript."""
         if not call_log_name:
             return None
 
@@ -578,11 +586,29 @@ class FrappeCRMClient:
             for comment in comments:
                 content = comment.get("content", "")
                 if "AI Call Intelligence Analysis" in content:
-                    return self._parse_html_comment(content)
+                    intel = self._parse_html_comment(content)
+                    transcript = self._parse_html_transcript(content)
+                    return {"intelligence": intel, "transcript": transcript}
             return None
         except Exception as exc:
             logger.warning(f"[FrappeCRMClient] Failed to fetch intelligence for Call Log {call_log_name}: {exc}")
             return None
+
+    async def _fetch_and_parse_intelligence(self, call_log_name: str, client: httpx.AsyncClient) -> CallIntelligence | None:
+        """Fetch Timeline Comments for a Call Log and parse out the structured CallIntelligence data."""
+        data = await self._fetch_and_parse_intelligence_and_transcript(call_log_name, client)
+        return data.get("intelligence") if data else None
+
+    def _parse_html_transcript(self, html: str) -> str | None:
+        """Parse the audio transcript from the HTML comment details section."""
+        import html as html_lib
+        import re
+
+        match = re.search(r"<pre[^>]*>(.*?)</pre>", html, re.IGNORECASE | re.DOTALL)
+        if match:
+            raw_text = match.group(1).strip()
+            return html_lib.unescape(raw_text)
+        return None
 
     def _parse_html_comment(self, html: str) -> CallIntelligence:
         """Parse the HTML comment string back into a CallIntelligence model."""
@@ -647,23 +673,24 @@ class FrappeCRMClient:
                 pass
 
         return CallIntelligence(
-            call_summary=summary_str or "Summary extracted from timeline.",
+            call_summary=summary_str or "Unknown",
             call_outcome=outcome,
             lead_quality=quality,
             primary_objection=objection,
-            customer_intent=intent_str,
-            next_action=action_str,
+            customer_intent=intent_str or "Unknown",
+            next_action=action_str or "Unknown",
             follow_up_at=dt,
-            agent_quality_notes=notes_str,
+            agent_quality_notes=notes_str or "Not available",
 
             # Phase 3
-            key_points=[k.strip() for k in key_points_str.split(",")] if key_points_str and key_points_str != "None" else [],
+            key_points=[k.strip() for k in key_points_str.split(",") if k.strip()] if key_points_str and key_points_str.lower() != "none" else [],
             follow_up_required=(follow_up_req_str.lower() == "true"),
             follow_up_date=dt_new,
-            follow_up_notes=follow_up_notes_str if follow_up_notes_str != "None" else None,
-            objections=[o.strip() for o in objections_list_str.split(",")] if objections_list_str and objections_list_str != "None" else [],
-            recommended_action=rec_action_str if rec_action_str != "None" else None
+            follow_up_notes=follow_up_notes_str if follow_up_notes_str and follow_up_notes_str.lower() != "none" else None,
+            objections=[o.strip() for o in objections_list_str.split(",") if o.strip()] if objections_list_str and objections_list_str.lower() != "none" else [],
+            recommended_action=rec_action_str if rec_action_str and rec_action_str.lower() != "none" else None,
         )
+
 
 
 
