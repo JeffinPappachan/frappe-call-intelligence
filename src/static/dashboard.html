@@ -227,6 +227,44 @@
             background: rgba(255, 255, 255, 0.05);
         }
 
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 0.5rem;
+            margin-top: 1.25rem;
+            flex-wrap: wrap;
+        }
+
+        .pagination button {
+            background: var(--surface-color-light);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 0.4rem 0.85rem;
+            font-size: 0.85rem;
+            font-family: var(--font-family);
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .pagination button:hover {
+            background: var(--accent-primary);
+            color: #0f111a;
+        }
+
+        .pagination button.active {
+            background: var(--accent-primary);
+            color: #0f111a;
+            font-weight: 600;
+            border-color: var(--accent-primary);
+        }
+
+        .pagination button:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
         .badge {
             padding: 0.25rem 0.75rem;
             border-radius: 9999px;
@@ -453,6 +491,7 @@
             <table id="callsTable">
                 <thead>
                     <tr>
+                        <th>Sl. No</th>
                         <th>Date & Time</th>
                         <th>Lead</th>
                         <th>Agent</th>
@@ -466,6 +505,7 @@
                     <!-- Rows populated by JS -->
                 </tbody>
             </table>
+            <div class="pagination" id="pagination"></div>
         </div>
     </div>
 
@@ -488,6 +528,8 @@
         // Chart Instances
         let telecallerChart, qualityChart, outcomeChart;
         let recentCallsData = [];
+        let currentPage = 1;
+        const rowsPerPage = 10;
 
         // Formatting utilities
         const formatDate = (dateString) => {
@@ -626,47 +668,71 @@
             }
         };
 
+        const renderCallsPage = (page) => {
+            currentPage = page;
+            const tbody = document.getElementById('callsTableBody');
+            tbody.innerHTML = '';
+
+            if (recentCallsData.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;">No calls processed yet.</td></tr>';
+                document.getElementById('pagination').innerHTML = '';
+                return;
+            }
+
+            const totalPages = Math.ceil(recentCallsData.length / rowsPerPage);
+            if (currentPage > totalPages) currentPage = totalPages;
+            const start = (currentPage - 1) * rowsPerPage;
+            const end = Math.min(start + rowsPerPage, recentCallsData.length);
+            const pageData = recentCallsData.slice(start, end);
+
+            pageData.forEach((call, i) => {
+                const globalIndex = start + i;
+                let outcome = '<span style="color:var(--text-secondary)">Not analyzed</span>';
+                let quality = '<span style="color:var(--text-secondary)">Not analyzed</span>';
+                let review = '<span style="color:var(--text-secondary)">Not analyzed</span>';
+
+                if (call.intelligence) {
+                    outcome = call.intelligence.call_outcome || '-';
+                    quality = getQualityBadge(call.intelligence.lead_quality) || '-';
+                    review = call.intelligence.review_flag
+                        ? '<span class="badge badge-review"><i data-lucide="alert-circle" size="12"></i> Review</span>'
+                        : 'OK';
+                }
+
+                const tr = document.createElement('tr');
+                tr.onclick = () => openCallDetails(globalIndex);
+                tr.innerHTML = `
+                    <td>${globalIndex + 1}</td>
+                    <td>${formatDate(call.event_timestamp)}</td>
+                    <td>${call.matched_lead || 'Unknown'}</td>
+                    <td>${call.agent_id || 'Unknown'}</td>
+                    <td>${call.duration_seconds || 0}s</td>
+                    <td>${outcome}</td>
+                    <td>${quality}</td>
+                    <td>${review}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+            // Render pagination
+            const paginationEl = document.getElementById('pagination');
+            let paginationHtml = '';
+            paginationHtml += `<button ${currentPage === 1 ? 'disabled' : ''} onclick="renderCallsPage(${currentPage - 1})">&laquo; Prev</button>`;
+            for (let p = 1; p <= totalPages; p++) {
+                paginationHtml += `<button class="${p === currentPage ? 'active' : ''}" onclick="renderCallsPage(${p})">${p}</button>`;
+            }
+            paginationHtml += `<button ${currentPage === totalPages ? 'disabled' : ''} onclick="renderCallsPage(${currentPage + 1})">Next &raquo;</button>`;
+            paginationEl.innerHTML = paginationHtml;
+
+            if (typeof lucide !== 'undefined') lucide.createIcons();
+        };
+
         const fetchCalls = async () => {
             try {
                 const res = await fetch('/api/v1/dashboard/calls');
                 const data = await res.json();
                 recentCallsData = data.calls;
-                
-                const tbody = document.getElementById('callsTableBody');
-                tbody.innerHTML = '';
-                
-                if (recentCallsData.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;">No calls processed yet.</td></tr>';
-                    return;
-                }
-
-                recentCallsData.forEach((call, index) => {
-                    let outcome = '<span style="color:var(--text-secondary)">Not analyzed</span>';
-                    let quality = '<span style="color:var(--text-secondary)">Not analyzed</span>';
-                    let review = '<span style="color:var(--text-secondary)">Not analyzed</span>';
-                    
-                    if (call.intelligence) {
-                        outcome = call.intelligence.call_outcome || '-';
-                        quality = getQualityBadge(call.intelligence.lead_quality) || '-';
-                        review = call.intelligence.review_flag 
-                            ? '<span class="badge badge-review"><i data-lucide="alert-circle" size="12"></i> Review</span>' 
-                            : 'OK';
-                    }
-                    
-                    const tr = document.createElement('tr');
-                    tr.onclick = () => openCallDetails(index);
-                    tr.innerHTML = `
-                        <td>${formatDate(call.event_timestamp)}</td>
-                        <td>${call.matched_lead || 'Unknown'}</td>
-                        <td>${call.agent_id || 'Unknown'}</td>
-                        <td>${call.duration_seconds || 0}s</td>
-                        <td>${outcome}</td>
-                        <td>${quality}</td>
-                        <td>${review}</td>
-                    `;
-                    tbody.appendChild(tr);
-                });
-                lucide.createIcons();
+                renderCallsPage(1);
             } catch (err) {
                 console.error("Failed to fetch calls", err);
             }

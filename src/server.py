@@ -358,6 +358,7 @@ async def process_audio(
             recording_url=None,
             agent_id=agent_id,
             call_type="sales_enquiry",
+            event_timestamp=datetime.now(),
         )
 
         pipeline = get_pipeline()
@@ -403,7 +404,7 @@ async def get_dashboard_metrics():
     """Aggregate call metrics from the local idempotency store or live CRM."""
     if not settings.mock_mode:
         frappe = get_frappe_client()
-        calls = await frappe.get_recent_call_logs(limit=50)
+        calls = await frappe.get_recent_call_logs(limit=0)
     else:
         calls = get_pipeline().idempotency_store.get_all()
 
@@ -476,7 +477,7 @@ async def get_dashboard_calls():
     """Get recent calls feed for the dashboard."""
     if not settings.mock_mode:
         frappe = get_frappe_client()
-        calls = await frappe.get_recent_call_logs(limit=50)
+        calls = await frappe.get_recent_call_logs(limit=0)
     else:
         calls = get_pipeline().idempotency_store.get_all()
 
