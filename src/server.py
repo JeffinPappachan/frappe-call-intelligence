@@ -3,10 +3,12 @@ import logging
 import os
 import re
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, UTC
 from pathlib import Path
 
 from fastapi import (
+    BackgroundTasks,
     FastAPI,
     File,
     Form,
@@ -43,10 +45,29 @@ settings = get_settings()
 setup_structured_logging(log_level=settings.log_level, log_format=settings.log_format)
 logger = logging.getLogger("ai_call_intelligence")
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    worker_task = None
+    if settings.idempotency_backend == "supabase":
+        import asyncio
+        from src.worker import run_worker
+        worker_task = asyncio.create_task(run_worker(register_signals=False))
+        logger.info("Started in-process queue worker task.")
+    yield
+    if worker_task:
+        worker_task.cancel()
+        try:
+            await worker_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
 app = FastAPI(
     title="AI Call Intelligence with Frappe CRM",
     description="Telephony Webhook Ingestion, Speech-to-Text, Structured LLM Extraction, and Frappe CRM Write-Back.",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # Enable CORS with explicit origins from settings
@@ -249,7 +270,7 @@ async def get_crm_agents():
     status_code=status.HTTP_200_OK,
     tags=["Telephony Webhook"],
 )
-async def telephony_webhook(payload: TelephonyWebhookPayload):
+async def telephony_webhook(payload: TelephonyWebhookPayload, background_tasks: BackgroundTasks):
     """Ingest telephony webhook event (Exotel / Twilio schema) and trigger the AI pipeline."""
     req_id = request_id_ctx.get("-")
     logger.info(
@@ -269,7 +290,12 @@ async def telephony_webhook(payload: TelephonyWebhookPayload):
         # Accept call and persist initial state synchronously
         result = pipeline.accept_call(event=payload)
 
-        # Dispatch background processing is now handled by external workers (Phase 5)
+        # Dispatch background processing immediately
+        if not result.idempotent_replay:
+            background_tasks.add_task(
+                pipeline.process_call_background,
+                event=payload,
+            )
         return result
     except AppError as app_err:
         metrics.increment("pipeline_failed_total")
@@ -326,6 +352,7 @@ ALLOWED_AUDIO_MIME_TYPES = {
     tags=["Audio Processing"],
 )
 async def process_audio(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(..., description="Audio recording file (WAV, MP3, M4A)"),
     lead_phone: str | None = Form(default=None, description="Lead phone number for CRM linking"),
     agent_phone: str | None = Form(default=None, description="Agent phone number"),
@@ -476,6 +503,15 @@ async def process_audio(
 
         import asyncio
         result = await asyncio.to_thread(_sync_accept_and_upload)
+
+        pipeline = get_pipeline()
+        if not result.idempotent_replay:
+            background_tasks.add_task(
+                pipeline.process_call_background,
+                event=event,
+                raw_audio=audio_bytes,
+                audio_filename=filename,
+            )
 
         return result
     except AppError as app_err:

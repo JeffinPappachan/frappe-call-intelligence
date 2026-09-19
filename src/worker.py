@@ -1,11 +1,10 @@
 import asyncio
 import logging
 import signal
-import sys
 import uuid
 from datetime import datetime
 
-from src.observability import setup_structured_logging, request_id_ctx
+from src.observability import request_id_ctx
 from src.pipeline import get_pipeline
 from src.schemas import TelephonyWebhookPayload, CallDirection, CallStatus
 from src.config import get_settings
@@ -42,20 +41,23 @@ async def requeue_stuck_jobs(pipeline):
         logger.warning(f"Failed to requeue stuck jobs: {exc}")
 
 
-async def run_worker():
-    setup_structured_logging(log_level="INFO", log_format="json")
+async def run_worker(register_signals: bool = True):
     settings = get_settings()
 
     if settings.idempotency_backend != "supabase":
-        logger.error("Worker can only run when IDEMPOTENCY_BACKEND=supabase")
-        sys.exit(1)
+        logger.info("Worker skipped: IDEMPOTENCY_BACKEND is not supabase")
+        return
 
     worker_id = f"worker-{uuid.uuid4().hex[:8]}"
     logger.info(f"Starting job queue worker: {worker_id}")
 
-    # Register signal handlers for graceful shutdown
-    signal.signal(signal.SIGINT, _signal_handler)
-    signal.signal(signal.SIGTERM, _signal_handler)
+    # Register signal handlers for graceful shutdown if requested and in main thread
+    if register_signals:
+        try:
+            signal.signal(signal.SIGINT, _signal_handler)
+            signal.signal(signal.SIGTERM, _signal_handler)
+        except Exception:
+            pass
 
     pipeline = get_pipeline()
 
