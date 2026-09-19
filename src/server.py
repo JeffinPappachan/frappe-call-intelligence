@@ -16,6 +16,7 @@ from fastapi import (
     Response,
     UploadFile,
     status,
+    BackgroundTasks,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
@@ -184,7 +185,7 @@ async def get_metrics():
     status_code=status.HTTP_200_OK,
     tags=["Telephony Webhook"],
 )
-async def telephony_webhook(payload: TelephonyWebhookPayload):
+async def telephony_webhook(payload: TelephonyWebhookPayload, background_tasks: BackgroundTasks):
     """Ingest telephony webhook event (Exotel / Twilio schema) and trigger the AI pipeline."""
     req_id = request_id_ctx.get("-")
     logger.info(
@@ -201,7 +202,20 @@ async def telephony_webhook(payload: TelephonyWebhookPayload):
 
     try:
         pipeline = get_pipeline()
-        result = await pipeline.process_call(event=payload)
+        # Accept call and persist initial state synchronously
+        result = pipeline.accept_call(event=payload)
+        
+        # If it's an idempotent replay (already processed/processing), just return it
+        if result.idempotent_replay:
+            return result
+            
+        # Dispatch background processing
+        background_tasks.add_task(
+            pipeline.process_call_background,
+            event=payload,
+            raw_audio=None,
+            audio_filename=None,
+        )
         return result
     except AppError as app_err:
         metrics.increment("pipeline_failed_total")
@@ -258,6 +272,7 @@ ALLOWED_AUDIO_MIME_TYPES = {
     tags=["Audio Processing"],
 )
 async def process_audio(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(..., description="Audio recording file (WAV, MP3, M4A)"),
     lead_phone: str = Form(..., description="Lead phone number for CRM linking"),
     agent_id: str | None = Form(default="jeffinpappachan110@gmail.com"),
@@ -362,11 +377,19 @@ async def process_audio(
         )
 
         pipeline = get_pipeline()
-        result = await pipeline.process_call(
-            event=event,
-            raw_audio=audio_bytes,
-            audio_filename=filename,
-        )
+        
+        # Accept call and persist initial state synchronously
+        result = pipeline.accept_call(event=event)
+        
+        # Enqueue background task
+        if not result.idempotent_replay:
+            background_tasks.add_task(
+                pipeline.process_call_background,
+                event=event,
+                raw_audio=audio_bytes,
+                audio_filename=filename,
+            )
+            
         return result
     except AppError as app_err:
         metrics.increment("pipeline_failed_total")

@@ -116,8 +116,8 @@ async def test_audio_upload_supported_formats_success(filename, mime_type):
         assert response.status_code == 200
         result = response.json()
         assert result["success"] is True
-        assert result["matched_lead"] is not None
-        assert result["transcript"] is not None
+        assert result.get("matched_lead") is None
+        assert result.get("transcript") is None
 
 
 # =====================================================================

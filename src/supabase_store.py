@@ -69,8 +69,16 @@ class SupabaseIdempotencyStore(IdempotencyStore):
             except ValueError:
                 direction_enum = CallDirection.OUTBOUND
 
+            # Map processing status
+            from src.schemas import ProcessingStatus
+            status_str = call.get("processing_status", "completed")
+            try:
+                processing_status_enum = ProcessingStatus(status_str)
+            except ValueError:
+                processing_status_enum = ProcessingStatus.COMPLETED
+
             return PipelineResponse(
-                success=True,
+                success=True if processing_status_enum == ProcessingStatus.COMPLETED else (False if processing_status_enum == ProcessingStatus.FAILED else True),
                 provider_call_id=call["provider_call_id"],
                 idempotent_replay=True,
                 transcript=call.get("transcript"),
@@ -83,7 +91,9 @@ class SupabaseIdempotencyStore(IdempotencyStore):
                 direction=direction_enum,
                 event_timestamp=event_ts,
                 agent_id=call.get("agent_id"),
-                recording_storage_path=call.get("recording_storage_path")
+                recording_storage_path=call.get("recording_storage_path"),
+                processing_status=processing_status_enum,
+                error_message=call.get("error_message")
             )
         except Exception as exc:
             logger.error(f"[SupabaseIdempotencyStore] get() failed for {key}: {exc}")
@@ -105,6 +115,8 @@ class SupabaseIdempotencyStore(IdempotencyStore):
                 "transcript": value.transcript,
                 "event_timestamp": value.event_timestamp.isoformat() if value.event_timestamp else None,
                 "recording_storage_path": value.recording_storage_path,
+                "processing_status": value.processing_status.value if value.processing_status else "completed",
+                "error_message": value.error_message,
             }
             # Instead of standard INSERT, handle potential conflicts if another worker just inserted
             call_res = self.client.table("calls").upsert(call_data, on_conflict="provider_call_id").execute()
@@ -187,8 +199,16 @@ class SupabaseIdempotencyStore(IdempotencyStore):
                 except ValueError:
                     direction_enum = CallDirection.OUTBOUND
 
+                # Map processing status
+                from src.schemas import ProcessingStatus
+                status_str = call.get("processing_status", "completed")
+                try:
+                    processing_status_enum = ProcessingStatus(status_str)
+                except ValueError:
+                    processing_status_enum = ProcessingStatus.COMPLETED
+
                 resp = PipelineResponse(
-                    success=True,
+                    success=True if processing_status_enum == ProcessingStatus.COMPLETED else (False if processing_status_enum == ProcessingStatus.FAILED else True),
                     provider_call_id=call["provider_call_id"],
                     idempotent_replay=True,
                     transcript=call.get("transcript"),
@@ -201,7 +221,9 @@ class SupabaseIdempotencyStore(IdempotencyStore):
                     direction=direction_enum,
                     event_timestamp=event_ts,
                     agent_id=call.get("agent_id"),
-                    recording_storage_path=call.get("recording_storage_path")
+                    recording_storage_path=call.get("recording_storage_path"),
+                    processing_status=processing_status_enum,
+                    error_message=call.get("error_message")
                 )
                 results.append(resp)
             return results

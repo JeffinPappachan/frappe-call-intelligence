@@ -45,6 +45,13 @@ class CallStatus(str, Enum):
     CANCELED = "canceled"
 
 
+class ProcessingStatus(str, Enum):
+    RECEIVED = "received"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class TelephonyWebhookPayload(BaseModel):
     """Schema representing incoming webhook payload from a telephony provider (e.g. Exotel / Twilio)."""
 
@@ -138,6 +145,10 @@ class PipelineResponse(BaseModel):
     event_timestamp: datetime | None = None
     agent_id: str | None = None
     recording_storage_path: str | None = None
+    
+    # State tracking
+    processing_status: ProcessingStatus = Field(default=ProcessingStatus.COMPLETED)
+    error_message: str | None = None
 
 
 class DashboardMetricsResponse(BaseModel):
