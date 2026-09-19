@@ -31,7 +31,27 @@ This system implements an end-to-end, production-grade telecaller intelligence p
 
 ---
 
-## 2. Architecture & Pipeline Flow
+## 2. Live System Screenshots
+
+### Executive Manager Dashboard (Real-time Analytics & KPIs)
+> Real-time executive dashboard hosted on Netlify, displaying call volume, completion rates, average call durations, telecaller activity breakdown, and outcome distribution.
+![Executive Manager Dashboard](docs/screenshots/01_dashboard_kpis.png)
+
+### Recent Calls Intelligence Feed
+> Live call intelligence feed with customer lead identification, telecaller attribution, duration, AI call outcome categorizations, lead quality tags (`Hot`, `Warm`, `Cold`), and review flags.
+![Recent Calls Table](docs/screenshots/02_recent_calls_table.png)
+
+### Frappe Cloud CRM Live Synchronization
+> Automatic bi-directional synchronization showing completed `CRM Call Log` documents created directly in Frappe Cloud CRM with telephony metadata, timestamps, and caller/callee numbers.
+![Frappe Cloud CRM Call Logs](docs/screenshots/03_frappe_crm_call_logs.png)
+
+### Production Interactive API Documentation (FastAPI Swagger UI)
+> Production REST API documentation deployed on Render exposing telephony webhook receivers, audio processing pipeline, dashboard analytics, and on-demand AI re-analysis endpoints.
+![FastAPI Swagger UI](docs/screenshots/04_fastapi_swagger_docs.png)
+
+---
+
+## 3. Architecture & Pipeline Flow
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -90,7 +110,7 @@ For complete Mermaid system and sequence diagrams, see [docs/architecture.md](do
 
 ---
 
-## 3. Project Structure
+## 4. Project Structure
 
 ```
 e:\Hash
@@ -109,6 +129,7 @@ e:\Hash
 │   ├── package.json
 │   └── vite.config.js              # Vite bundler configuration with dev proxy
 ├── docs/
+│   ├── screenshots/                # Application UI screenshots
 │   ├── environment-inspection.md   # System inspection & tool verification
 │   └── architecture.md             # Mermaid architecture diagrams
 ├── samples/
@@ -146,7 +167,7 @@ e:\Hash
 
 ---
 
-## 4. Environment Setup
+## 5. Environment Setup
 
 ### Prerequisites
 - Python 3.11+ (Python 3.13 supported)
@@ -201,7 +222,7 @@ IDEMPOTENCY_BACKEND=supabase
 
 ---
 
-## 5. Running Locally
+## 6. Running Locally
 
 ### Start Backend API Server
 ```powershell
@@ -219,7 +240,7 @@ npm run dev
 
 ---
 
-## 6. Core REST API Endpoints
+## 7. Core REST API Endpoints
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
@@ -239,7 +260,7 @@ npm run dev
 
 ---
 
-## 7. Running the Automated Test Suite
+## 8. Running the Automated Test Suite
 
 The project includes an extensive test suite covering schema validation, STT/AI abstractions, idempotency, CRM integration, concurrency, and reliability:
 
@@ -259,7 +280,7 @@ The project includes an extensive test suite covering schema validation, STT/AI 
 
 ---
 
-## 8. Deployment Architecture
+## 9. Deployment Architecture
 
 ### Frontend (Netlify)
 - **Live URL:** [https://ai-call-intelligence.netlify.app](https://ai-call-intelligence.netlify.app)
@@ -281,7 +302,7 @@ The project includes an extensive test suite covering schema validation, STT/AI 
 
 ---
 
-## 9. Key Technical Features & Safeguards
+## 10. Key Technical Features & Safeguards
 
 1. **Direct Audio Streaming:** The `/recording` endpoint serves audio bytes directly with `Accept-Ranges: bytes` headers, avoiding CORS issues with third-party presigned redirects and enabling continuous audio scrubbing.
 2. **Auto-Healing Intelligence:** Calls loaded in the dashboard automatically detect mock placeholder data and re-transcribe/re-analyze using real Groq Whisper and LLM models.
