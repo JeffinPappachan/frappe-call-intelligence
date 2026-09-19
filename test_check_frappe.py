@@ -1,10 +1,8 @@
 import asyncio
 import httpx
 from src.frappe_client import get_frappe_client
-from src.config import get_settings
 
 async def main():
-    settings = get_settings()
     client = get_frappe_client()
 
     async with httpx.AsyncClient(timeout=15.0) as http_client:
