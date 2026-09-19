@@ -12,6 +12,7 @@ const UploadModal = ({ isOpen, onClose, onUpload }) => {
   
   // Form State
   const [selectedContact, setSelectedContact] = useState('');
+  const [customContact, setCustomContact] = useState('');
   const [leadPhone, setLeadPhone] = useState('');
   const [selectedAgent, setSelectedAgent] = useState('');
   const [customAgent, setCustomAgent] = useState('');
@@ -27,6 +28,7 @@ const UploadModal = ({ isOpen, onClose, onUpload }) => {
       // Reset form
       setFile(null);
       setSelectedContact('');
+      setCustomContact('');
       setLeadPhone('');
       setSelectedAgent('');
       setCustomAgent('');
@@ -63,6 +65,7 @@ const UploadModal = ({ isOpen, onClose, onUpload }) => {
     setSelectedContact(contactId);
     
     if (contactId && contactId !== 'custom') {
+      setCustomContact('');
       if (contactId.startsWith('saved-')) {
         setLeadPhone(contactId.replace('saved-', ''));
       } else {
@@ -71,8 +74,11 @@ const UploadModal = ({ isOpen, onClose, onUpload }) => {
           setLeadPhone(contact.mobile_no);
         }
       }
+    } else if (contactId === 'custom') {
+      setCustomContact('');
     } else {
       setLeadPhone('');
+      setCustomContact('');
     }
   };
 
@@ -101,8 +107,19 @@ const UploadModal = ({ isOpen, onClose, onUpload }) => {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('lead_phone', leadPhone);
-    if (selectedContact && selectedContact !== 'custom' && !selectedContact.startsWith('saved-')) {
+    if (selectedContact === 'custom' && customContact) {
+      formData.append('lead_name', customContact);
+    } else if (selectedContact && selectedContact !== 'custom' && !selectedContact.startsWith('saved-')) {
       formData.append('lead_id', selectedContact);
+      const contact = contacts.find(c => c.name === selectedContact);
+      if (contact && contact.lead_name) {
+        formData.append('lead_name', contact.lead_name);
+      }
+    } else if (selectedContact && selectedContact.startsWith('saved-')) {
+      const contact = contacts.find(c => c.name === selectedContact);
+      if (contact && contact.lead_name && contact.lead_name !== 'Custom') {
+        formData.append('lead_name', contact.lead_name);
+      }
     }
     
     if (selectedAgent === 'custom' && customAgent) {
@@ -131,6 +148,14 @@ const UploadModal = ({ isOpen, onClose, onUpload }) => {
   };
 
   if (!isOpen) return null;
+
+  const isFormValid = Boolean(
+    file &&
+    leadPhone.trim() &&
+    (selectedContact !== 'custom' || customContact.trim()) &&
+    (selectedAgent !== 'custom' || customAgent.trim()) &&
+    !isUploading
+  );
 
   return (
     <div className="modal-overlay">
@@ -173,18 +198,20 @@ const UploadModal = ({ isOpen, onClose, onUpload }) => {
                   {c.lead_name} {c.organization ? `(${c.organization})` : ''} - {c.mobile_no}
                 </option>
               ))}
-              <option value="custom">-- Add Custom Phone --</option>
+              <option value="custom">-- Add Custom Name --</option>
             </select>
           </div>
 
           {selectedContact === 'custom' && (
             <div className="form-group">
-              <label>Lead Phone Number <span className="required">*</span></label>
+              <label>
+                {callType === 'inbound' ? 'Custom Caller Name' : 'Custom Receiver Name'} <span className="required">*</span>
+              </label>
               <input 
                 type="text" 
-                value={leadPhone} 
-                onChange={(e) => setLeadPhone(e.target.value)} 
-                placeholder="+15551234567"
+                value={customContact} 
+                onChange={(e) => setCustomContact(e.target.value)} 
+                placeholder="E.g. John Doe"
                 required
               />
             </div>
@@ -212,12 +239,12 @@ const UploadModal = ({ isOpen, onClose, onUpload }) => {
 
             {selectedAgent === 'custom' && (
               <div className="form-group">
-                <label>Custom Agent Name</label>
+                <label>Custom Agent Name <span className="required">*</span></label>
                 <input 
                   type="text" 
                   value={customAgent} 
                   onChange={(e) => setCustomAgent(e.target.value)} 
-                  placeholder="E.g. John Doe"
+                  placeholder="E.g. Sarah Jenkins"
                   required
                 />
               </div>
@@ -234,21 +261,27 @@ const UploadModal = ({ isOpen, onClose, onUpload }) => {
 
           <div className="form-row">
             <div className="form-group">
-              <label>From Number</label>
+              <label>
+                From Number {callType === 'inbound' && <span className="required">*</span>}
+              </label>
               <input 
                 type="text" 
                 value={callType === 'inbound' ? leadPhone : agentPhone} 
                 onChange={(e) => callType === 'inbound' ? setLeadPhone(e.target.value) : setAgentPhone(e.target.value)} 
                 placeholder="E.g. +15551234567"
+                required={callType === 'inbound'}
               />
             </div>
             <div className="form-group">
-              <label>To Number</label>
+              <label>
+                To Number {callType === 'outbound' && <span className="required">*</span>}
+              </label>
               <input 
                 type="text" 
                 value={callType === 'outbound' ? leadPhone : agentPhone} 
                 onChange={(e) => callType === 'outbound' ? setLeadPhone(e.target.value) : setAgentPhone(e.target.value)} 
                 placeholder="E.g. +15551234567"
+                required={callType === 'outbound'}
               />
             </div>
           </div>
@@ -266,7 +299,7 @@ const UploadModal = ({ isOpen, onClose, onUpload }) => {
             <button type="button" onClick={onClose} disabled={isUploading}>
               Cancel
             </button>
-            <button type="submit" className="btn-primary" disabled={!file || !leadPhone || isUploading}>
+            <button type="submit" className="btn-primary" disabled={!isFormValid}>
               {isUploading ? 'Uploading...' : <><Upload size={16} /> Process Audio</>}
             </button>
           </div>

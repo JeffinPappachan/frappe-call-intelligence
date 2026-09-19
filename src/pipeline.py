@@ -370,7 +370,7 @@ class CallIntelligencePipeline:
             message="Call accepted",
             event_payload=event.model_dump(mode="json"),
             recording_storage_path=recording_storage_path,
-            matched_lead=f"Contact ({event.lead_id})" if event.lead_id else None,
+            matched_lead=event.lead_name or (f"Contact ({event.lead_id})" if event.lead_id else None),
         )
         self.idempotency_store.set(call_id, response)
         return response

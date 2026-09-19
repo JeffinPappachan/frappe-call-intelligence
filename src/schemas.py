@@ -67,6 +67,7 @@ class TelephonyWebhookPayload(BaseModel):
     call_type: str | None = Field(default="sales_enquiry", description="Category or purpose of the call")
     event_timestamp: datetime | None = Field(default=None, description="Provider timestamp of the event")
     lead_id: str | None = Field(default=None, description="Explicit CRM Lead / Contact ID if known")
+    lead_name: str | None = Field(default=None, description="Explicit CRM Contact or Lead name")
 
     @field_validator("provider_call_id")
     @classmethod
@@ -86,6 +87,7 @@ class AudioProcessRequest(BaseModel):
     direction: CallDirection = Field(default=CallDirection.OUTBOUND)
     duration_seconds: int = Field(default=60, ge=0)
     lead_id: str | None = Field(default=None, description="Explicit CRM Lead / Contact ID")
+    lead_name: str | None = Field(default=None, description="Explicit CRM Contact or Lead name")
 
 
 class CallIntelligence(BaseModel):

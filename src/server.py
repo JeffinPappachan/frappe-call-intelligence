@@ -188,20 +188,21 @@ async def get_crm_contacts():
     try:
         supabase = get_supabase_client()
         res = supabase.table("calls").select("event_payload").execute()
-        manual_phones = set()
+        manual_contacts_map = {}
         for call in res.data:
             payload = call.get("event_payload", {})
             if payload and payload.get("telephony_provider") == "manual_upload":
                 # For manual uploads, the lead phone is stored in to_number (or from_number)
                 phone = payload.get("to_number") or payload.get("from_number")
-                if phone:
-                    manual_phones.add(phone)
+                name = payload.get("lead_name") or "Custom"
+                if phone and phone not in manual_contacts_map:
+                    manual_contacts_map[phone] = name
 
-        for phone in manual_phones:
+        for phone, name in manual_contacts_map.items():
             if not any(c.get("mobile_no") == phone for c in frappe_contacts):
                 frappe_contacts.append({
                     "name": f"saved-{phone}",
-                    "lead_name": "Custom",
+                    "lead_name": name,
                     "organization": "",
                     "mobile_no": phone
                 })
@@ -333,6 +334,7 @@ async def process_audio(
     duration_seconds: int | None = Form(default=60),
     provider_call_id: str | None = Form(default=None),
     lead_id: str | None = Form(default=None),
+    lead_name: str | None = Form(default=None),
     event_timestamp: str | None = Form(default=None),
 ):
     """Accept an uploaded audio recording and run speech-to-text, LLM extraction, and CRM sync.
@@ -446,6 +448,7 @@ async def process_audio(
             call_type="sales_enquiry",
             event_timestamp=dt,
             lead_id=lead_id,
+            lead_name=lead_name,
         )
 
         def _sync_accept_and_upload():
