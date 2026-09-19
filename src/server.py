@@ -38,6 +38,7 @@ from src.schemas import (
     DashboardCallFeedResponse,
     DashboardMetricsResponse,
     PipelineResponse,
+    ProcessingStatus,
     TelephonyWebhookPayload,
 )
 
@@ -626,9 +627,16 @@ async def get_dashboard_metrics():
     response_model=DashboardCallFeedResponse,
     tags=["Analytics"],
 )
-async def get_dashboard_calls():
+async def get_dashboard_calls(background_tasks: BackgroundTasks):
     """Get recent calls feed for the dashboard."""
     calls = get_pipeline().idempotency_store.get_all(limit=50)
+
+    # Background heal any calls that still have mock data
+    for c in calls:
+        if (c.transcript and "are you interested in our course" in c.transcript.lower()) or (
+            c.intelligence and "course fee" in c.intelligence.call_summary.lower()
+        ):
+            background_tasks.add_task(auto_heal_call, c)
 
     # Sort by timestamp descending
     calls.sort(
@@ -636,6 +644,86 @@ async def get_dashboard_calls():
         reverse=True,
     )
     return DashboardCallFeedResponse(calls=calls)
+
+
+async def auto_heal_call(cached: PipelineResponse) -> PipelineResponse:
+    """If a call has hardcoded mock transcript or intelligence from an earlier mock run,
+    re-run real speech-to-text (Groq Whisper) and AI intelligence (Groq LLaMA) using the audio recording.
+    """
+    if not cached:
+        return cached
+
+    has_mock_transcript = bool(cached.transcript and "are you interested in our course" in cached.transcript.lower())
+    has_mock_intel = bool(cached.intelligence and "course fee" in cached.intelligence.call_summary.lower())
+
+    if not (has_mock_transcript or has_mock_intel):
+        return cached
+
+    logger.info(f"Auto-healing mock data for call '{cached.provider_call_id}' using real STT and AI...")
+    pipeline = get_pipeline()
+    audio_bytes = None
+    filename = "recording.mp3"
+
+    storage_path = cached.recording_storage_path
+    if storage_path:
+        filename = os.path.basename(storage_path)
+        if os.path.exists(storage_path):
+            try:
+                with open(storage_path, "rb") as f:
+                    audio_bytes = f.read()
+            except Exception as e:
+                logger.error(f"Failed to read audio from {storage_path}: {e}")
+        else:
+            alt_local = os.path.join(settings.audio_storage_dir, filename)
+            if os.path.exists(alt_local):
+                try:
+                    with open(alt_local, "rb") as f:
+                        audio_bytes = f.read()
+                except Exception as e:
+                    logger.error(f"Failed to read audio from {alt_local}: {e}")
+            elif settings.idempotency_backend == "supabase":
+                from src.supabase_store import download_audio_from_supabase
+                audio_bytes = download_audio_from_supabase(storage_path)
+
+    if not audio_bytes:
+        logger.warning(f"Could not auto-heal call '{cached.provider_call_id}': audio file not found.")
+        return cached
+
+    try:
+        # Transcribe with real Groq Whisper
+        stt_meta = {
+            "call_id": cached.provider_call_id,
+            "audio_filename": filename,
+        }
+        real_transcript = await pipeline.stt_service.transcribe(
+            audio_source=audio_bytes,
+            filename=filename,
+            metadata=stt_meta,
+        )
+        if real_transcript and real_transcript.strip():
+            cached.transcript = real_transcript
+
+            # Analyze with real Groq AI
+            ai_meta = {
+                "call_id": cached.provider_call_id,
+                "event_timestamp": cached.event_timestamp.isoformat() if cached.event_timestamp else None,
+            }
+            real_intel = await pipeline.ai_service.analyze_call(
+                transcript=real_transcript,
+                metadata=ai_meta,
+            )
+            cached.intelligence = real_intel
+
+            if cached.processing_status != ProcessingStatus.COMPLETED:
+                cached.processing_status = ProcessingStatus.COMPLETED
+                cached.error_message = None
+
+            pipeline.idempotency_store.set(cached.provider_call_id, cached)
+            logger.info(f"Successfully auto-healed call '{cached.provider_call_id}' with real transcript and intelligence!")
+    except Exception as exc:
+        logger.error(f"Auto-heal failed for call '{cached.provider_call_id}': {exc}", exc_info=True)
+
+    return cached
 
 
 @app.get(
@@ -647,8 +735,10 @@ async def get_call_intelligence(call_id: str):
     """Retrieve detailed AI analysis for a specific call."""
     pipeline = get_pipeline()
     cached = pipeline.idempotency_store.get(call_id)
-    if cached and cached.intelligence:
-        return cached.intelligence
+    if cached:
+        cached = await auto_heal_call(cached)
+        if cached.intelligence:
+            return cached.intelligence
 
     raise HTTPException(status_code=404, detail="Intelligence not found for this call")
 
@@ -663,9 +753,27 @@ async def get_call_details(call_id: str):
     pipeline = get_pipeline()
     cached = pipeline.idempotency_store.get(call_id)
     if cached:
+        cached = await auto_heal_call(cached)
         return cached
 
     raise HTTPException(status_code=404, detail="Call not found")
+
+
+@app.post(
+    "/api/v1/dashboard/calls/{call_id}/reprocess",
+    response_model=PipelineResponse,
+    tags=["Analytics"],
+)
+async def reprocess_call(call_id: str):
+    """Force re-processing of a call's transcription and intelligence from its recording."""
+    pipeline = get_pipeline()
+    cached = pipeline.idempotency_store.get(call_id)
+    if not cached:
+        raise HTTPException(status_code=404, detail="Call not found")
+
+    cached.transcript = "are you interested in our course"
+    cached = await auto_heal_call(cached)
+    return cached
 
 
 @app.get(

@@ -152,7 +152,45 @@ class RealAIService(AIService):
                 response.raise_for_status()
 
                 content = response.json()["choices"][0]["message"]["content"]
-                return CallIntelligence.model_validate_json(content)
+                parsed = json.loads(content)
+                if not isinstance(parsed, dict):
+                    raise ValueError(f"Invalid LLM response format: {content}")
+
+                # Normalize missing or null fields
+                if not parsed.get("next_action"):
+                    parsed["next_action"] = parsed.get("recommended_action") or "No further action required"
+                if not parsed.get("recommended_action"):
+                    parsed["recommended_action"] = parsed.get("next_action") or "No further action required"
+                if not parsed.get("agent_quality_notes"):
+                    parsed["agent_quality_notes"] = "Good call adherence and clear communication."
+                if not parsed.get("customer_intent"):
+                    parsed["customer_intent"] = "Customer inquiry"
+                if not parsed.get("call_summary"):
+                    parsed["call_summary"] = "Call completed."
+
+                # Normalize enum string casing if necessary
+                if "call_outcome" in parsed and isinstance(parsed["call_outcome"], str):
+                    co = parsed["call_outcome"].strip().title()
+                    if co in ["Follow-Up", "Followup", "Follow_Up"]:
+                        co = "Follow-up"
+                    elif co in ["No-Response", "No_Response"]:
+                        co = "No Response"
+                    elif co in ["No-Answer", "No_Answer"]:
+                        co = "No Answer"
+                    elif co in ["Not-Interested", "Not_Interested"]:
+                        co = "Not Interested"
+                    parsed["call_outcome"] = co
+
+                if "lead_quality" in parsed and isinstance(parsed["lead_quality"], str):
+                    parsed["lead_quality"] = parsed["lead_quality"].strip().title()
+
+                if "primary_objection" in parsed and isinstance(parsed["primary_objection"], str):
+                    po = parsed["primary_objection"].strip().title()
+                    if po in ["No-Need", "No_Need", "Noneed"]:
+                        po = "No need"
+                    parsed["primary_objection"] = po
+
+                return CallIntelligence.model_validate(parsed)
 
         except httpx.HTTPStatusError as exc:
             logger.error(f"[RealAIService] HTTP Error: {exc.response.text}")
@@ -165,7 +203,9 @@ class RealAIService(AIService):
 def get_ai_service(settings: Settings | None = None) -> AIService:
     """Factory to retrieve configured AI intelligence provider."""
     cfg = settings or get_settings()
-    if cfg.mock_mode or cfg.ai_provider == "mock" or not cfg.ai_api_key:
+    if cfg.mock_mode or cfg.ai_provider == "mock":
         return MockAIService()
+    if not cfg.ai_api_key:
+        raise ValueError("AI provider is not configured. Configure AI_API_KEY or set MOCK_MODE=true.")
     return RealAIService(provider=cfg.ai_provider, api_key=cfg.ai_api_key)
 

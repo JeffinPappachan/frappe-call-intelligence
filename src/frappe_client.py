@@ -313,8 +313,19 @@ class FrappeCRMClient:
                 response = await client.post(url, headers=self._get_headers(), json=log_payload)
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
-                logger.error(f"[FrappeCRMClient] CRM Call Log creation failed: {exc.response.text}")
-                raise ValueError(f"Frappe Validation Error: {exc.response.text}") from exc
+                # If receiver is not a registered Frappe user, retry without receiver link
+                if "Could not find Call Received By" in exc.response.text or "LinkValidationError" in exc.response.text:
+                    logger.warning(f"[FrappeCRMClient] Link validation failed on CRM Call Log. Retrying without receiver/reference links: {exc.response.text}")
+                    log_payload_fallback = {k: v for k, v in log_payload.items() if k not in ["receiver", "reference_docname", "reference_doctype"]}
+                    try:
+                        response = await client.post(url, headers=self._get_headers(), json=log_payload_fallback)
+                        response.raise_for_status()
+                    except Exception as retry_exc:
+                        logger.error(f"[FrappeCRMClient] Fallback CRM Call Log creation failed: {retry_exc}")
+                        raise ValueError(f"Frappe Validation Error: {exc.response.text}") from exc
+                else:
+                    logger.error(f"[FrappeCRMClient] CRM Call Log creation failed: {exc.response.text}")
+                    raise ValueError(f"Frappe Validation Error: {exc.response.text}") from exc
 
             created_log = response.json().get("data", {})
             created_log_name = created_log.get("name")

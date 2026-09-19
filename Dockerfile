@@ -4,7 +4,10 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     APP_ENV=production \
-    MOCK_MODE=false
+    MOCK_MODE=false \
+    AI_PROVIDER=groq \
+    STT_PROVIDER=groq \
+    FRAPPE_BASE_URL=https://crm-chm-lly.nvi.frappe.cloud
 
 WORKDIR /app
 

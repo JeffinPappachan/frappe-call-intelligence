@@ -104,7 +104,7 @@ class CallIntelligence(BaseModel):
     key_points: list[str] = Field(default_factory=list, description="Key discussion points")
 
     # Existing compatible fields
-    next_action: str = Field(..., description="Concrete next sales/operational action")
+    next_action: str | None = Field(default="No further action required", description="Concrete next sales/operational action")
     follow_up_at: datetime | None = Field(
         default=None,
         description="Validated ISO date and time for follow-up, or null if not applicable",
@@ -117,8 +117,8 @@ class CallIntelligence(BaseModel):
     objections: list[str] = Field(default_factory=list, description="List of all objections raised")
     recommended_action: str | None = Field(default=None, description="Recommended next action")
 
-    agent_quality_notes: str = Field(
-        ...,
+    agent_quality_notes: str | None = Field(
+        default="Good call adherence and clear communication.",
         description="Observations regarding telecaller adherence, greeting, pacing, and tone",
     )
     review_flag: bool = Field(

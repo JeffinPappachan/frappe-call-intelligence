@@ -26,12 +26,12 @@ class Settings(BaseSettings):
 
     # AI Provider Settings
     # Supports: "mock", "groq", "openai", "gemini"
-    ai_provider: Literal["mock", "groq", "openai", "gemini"] = "mock"
+    ai_provider: Literal["mock", "groq", "openai", "gemini"] = "groq"
     ai_api_key: str = ""
 
     # STT Provider Settings
     # Supports: "mock", "groq", "openai", "gemini"
-    stt_provider: Literal["mock", "groq", "openai", "gemini"] = "mock"
+    stt_provider: Literal["mock", "groq", "openai", "gemini"] = "groq"
     stt_api_key: str = ""
 
     # Local Audio Storage

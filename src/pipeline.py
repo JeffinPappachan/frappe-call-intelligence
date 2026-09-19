@@ -435,6 +435,7 @@ class CallIntelligencePipeline:
         raw_audio: bytes | None = None,
         audio_filename: str | None = None,
         worker_id: str | None = None,
+        force_reprocess: bool = False,
     ) -> None:
         """Process a call event asynchronously in the background."""
         from src.observability import (
@@ -453,11 +454,12 @@ class CallIntelligencePipeline:
             return
 
         # Double check it isn't already processed or processing (Concurrency protection)
-        if cached.processing_status == ProcessingStatus.COMPLETED:
+        is_mock_data = bool(cached.transcript and "are you interested in our course" in cached.transcript.lower())
+        if cached.processing_status == ProcessingStatus.COMPLETED and not is_mock_data and not force_reprocess:
             logger.info(f"Skipping background processing for {call_id}: status is {cached.processing_status}")
             return
 
-        if cached.processing_status == ProcessingStatus.PROCESSING:
+        if cached.processing_status == ProcessingStatus.PROCESSING and not is_mock_data and not force_reprocess:
             if worker_id and cached.worker_id == worker_id:
                 # The current worker owns the job, we can proceed
                 pass
@@ -475,7 +477,7 @@ class CallIntelligencePipeline:
         try:
             # 2. Speech-to-Text Transcription
             stt_status = "skipped"
-            if not cached.transcript:
+            if not cached.transcript or is_mock_data or force_reprocess:
                 stt_status = "pending"
                 try:
                     # If we don't have raw_audio but we have a storage path in Supabase, fetch it.
@@ -521,7 +523,7 @@ class CallIntelligencePipeline:
 
             # 3. LLM Structured Intelligence Analysis
             llm_status = "skipped"
-            if not cached.intelligence:
+            if not cached.intelligence or is_mock_data or force_reprocess:
                 llm_status = "pending"
                 try:
                     ai_meta = {

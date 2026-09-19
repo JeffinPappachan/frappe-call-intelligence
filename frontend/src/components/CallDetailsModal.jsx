@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X } from 'lucide-react';
+import { X, RefreshCw } from 'lucide-react';
 import './CallDetailsModal.css';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
@@ -8,6 +8,7 @@ const CallDetailsModal = ({ call, onClose }) => {
   const [callDetails, setCallDetails] = useState(call || null);
   const [intelligence, setIntelligence] = useState(call?.intelligence || null);
   const [loading, setLoading] = useState(false);
+  const [isReprocessing, setIsReprocessing] = useState(false);
 
   useEffect(() => {
     if (call) {
@@ -43,6 +44,27 @@ const CallDetailsModal = ({ call, onClose }) => {
     }
   }, [call]);
 
+  const handleReprocess = async () => {
+    const fetchId = call?.provider_call_id || call?.frappe_call_log_id;
+    if (!fetchId || isReprocessing) return;
+
+    setIsReprocessing(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/v1/dashboard/calls/${encodeURIComponent(fetchId)}/reprocess`, {
+        method: 'POST'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.intelligence) setIntelligence(data.intelligence);
+        if (data.transcript) setCallDetails(prev => ({ ...prev, ...data }));
+      }
+    } catch (err) {
+      console.error("Failed to reprocess call:", err);
+    } finally {
+      setIsReprocessing(false);
+    }
+  };
+
   if (!call) return null;
 
   return (
@@ -50,9 +72,20 @@ const CallDetailsModal = ({ call, onClose }) => {
       <div className="modal-content">
         <div className="modal-header">
           <h2>Call Intelligence Details</h2>
-          <button className="close-btn" onClick={onClose}>
-            <X size={24} />
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <button 
+              className="reprocess-btn" 
+              onClick={handleReprocess}
+              disabled={isReprocessing || loading}
+              title="Re-run Speech-to-Text and AI Intelligence on audio recording"
+            >
+              <RefreshCw size={14} className={isReprocessing ? "spin" : ""} />
+              {isReprocessing ? "Analyzing..." : "Re-analyze Audio"}
+            </button>
+            <button className="close-btn" onClick={onClose}>
+              <X size={24} />
+            </button>
+          </div>
         </div>
         <div className="modal-body">
           {loading ? (

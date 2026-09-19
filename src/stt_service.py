@@ -168,7 +168,9 @@ class RealSTTService(STTService):
 def get_stt_service(settings: Settings | None = None) -> STTService:
     """Factory to retrieve configured STT provider."""
     cfg = settings or get_settings()
-    if cfg.mock_mode or cfg.stt_provider == "mock" or not cfg.stt_api_key:
+    if cfg.mock_mode or cfg.stt_provider == "mock":
         return MockSTTService()
+    if not cfg.stt_api_key:
+        raise ValueError("Speech-to-text is not configured. Configure STT_API_KEY or set MOCK_MODE=true.")
     return RealSTTService(provider=cfg.stt_provider, api_key=cfg.stt_api_key)
 
