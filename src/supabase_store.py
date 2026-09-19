@@ -248,13 +248,13 @@ class SupabaseIdempotencyStore(IdempotencyStore):
             res = self.client.rpc("claim_next_call", {"p_worker_id": worker_id}).execute()
             if not res.data:
                 return None
-            
+
             # The RPC returns a JSON object. We just extract provider_call_id and use get()
             claimed_data = res.data
             provider_call_id = claimed_data.get("provider_call_id")
             if not provider_call_id:
                 return None
-                
+
             return self.get(provider_call_id)
         except Exception as exc:
             logger.error(f"[SupabaseIdempotencyStore] claim_next_call() failed: {exc}")

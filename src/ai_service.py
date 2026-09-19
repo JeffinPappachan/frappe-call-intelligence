@@ -1,6 +1,5 @@
 import logging
 from abc import ABC, abstractmethod
-from datetime import datetime, timedelta, UTC
 
 from src.config import Settings, get_settings
 from src.schemas import CallIntelligence, CallOutcome, LeadQuality, PrimaryObjection
@@ -21,13 +20,6 @@ class MockAIService(AIService):
 
     async def analyze_call(self, transcript: str, metadata: dict | None = None) -> CallIntelligence:
         logger.info("[MockAIService] Generating mock structured intelligence (Simulation mode active)")
-
-        # Target a realistic follow-up time (e.g. upcoming Friday at 15:00 UTC)
-        now = datetime.now(UTC)
-        days_ahead = (4 - now.weekday()) % 7
-        if days_ahead == 0:
-            days_ahead = 7
-        target_follow_up = (now + timedelta(days=days_ahead)).replace(hour=15, minute=0, second=0, microsecond=0)
 
         # Basic context-sensitive heuristic for mock mode
         lower_transcript = transcript.lower()

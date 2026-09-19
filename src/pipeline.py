@@ -408,11 +408,11 @@ class CallIntelligencePipeline:
         from src.schemas import ProcessingStatus
         import logging
         logger = logging.getLogger('CallIntelligencePipeline')
-        
+
         error_msg = f"{step_name} failed: {exc}"
         cached.success = False
         cached.error_message = error_msg
-        
+
         from src.config import get_settings
         max_retries = 3 if get_settings().idempotency_backend == "supabase" else 0
         if cached.retry_count < max_retries:
@@ -424,7 +424,7 @@ class CallIntelligencePipeline:
         else:
             cached.processing_status = ProcessingStatus.FAILED
             logger.error(f"[{call_id}] {error_msg}. Max retries exceeded.")
-            
+
         self.idempotency_store.set(call_id, cached)
 
     async def process_call_background(

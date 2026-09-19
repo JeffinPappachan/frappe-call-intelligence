@@ -16,7 +16,6 @@ from fastapi import (
     Response,
     UploadFile,
     status,
-    BackgroundTasks,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
@@ -541,7 +540,7 @@ async def get_call_recording(call_id: str):
         return RedirectResponse(url)
     except Exception as exc:
         logger.error(f"Error generating signed URL for {call_id}: {exc}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve recording url")
+        raise HTTPException(status_code=500, detail="Failed to retrieve recording url") from exc
 
 
 

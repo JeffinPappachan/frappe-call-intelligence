@@ -149,7 +149,7 @@ class PipelineResponse(BaseModel):
     # State tracking
     processing_status: ProcessingStatus = Field(default=ProcessingStatus.COMPLETED)
     error_message: str | None = None
-    
+
     # Job queue tracking (Phase 5)
     worker_id: str | None = None
     retry_count: int = Field(default=0)

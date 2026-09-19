@@ -70,7 +70,7 @@ async def test_1_correct_transcript_is_used(mock_pipeline):
     """Test 1: Given an uploaded audio file or mocked STT result, verify that the final
     call record contains this transcript and not the marketing demo transcript.
     """
-    pipeline, stt_mock, ai_mock, frappe_mock = mock_pipeline
+    pipeline, stt_mock, ai_mock, _ = mock_pipeline
     stt_mock.transcribe.return_value = COURSE_FEES_TRANSCRIPT
 
     ai_mock.analyze_call.return_value = CallIntelligence(
@@ -345,7 +345,7 @@ async def test_8_crm_writeback_records(mock_pipeline):
         to_number="+15559998888",
     )
 
-    result = await pipeline.process_call(event=event, raw_audio=b"audio-bytes")
+    await pipeline.process_call(event=event, raw_audio=b"audio-bytes")
 
     # Verify Call Log creation call arguments
     frappe_mock.create_call_log.assert_awaited_once_with(
@@ -370,16 +370,6 @@ async def test_9_dashboard_comment_and_transcript_extraction():
     from src.frappe_client import FrappeCRMClient
 
     client = FrappeCRMClient(mock_mode=True)
-    intel = CallIntelligence(
-        call_summary="Customer asked about course fees.",
-        call_outcome=CallOutcome.FOLLOW_UP,
-        lead_quality=LeadQuality.WARM,
-        primary_objection=PrimaryObjection.NONE,
-        customer_intent="Know course fees",
-        next_action="Send details tomorrow",
-        follow_up_required=True,
-        agent_quality_notes="Helpful and clear.",
-    )
 
     # Construct HTML comment with transcript block
     html_content = (
