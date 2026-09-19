@@ -1,49 +1,92 @@
 # AI Call Intelligence with Frappe CRM
 
 > **Assessment Track:** Test Work 01 — Hash Adz Creative Consultant AI Automation Developer Technical Test  
-> **Version:** 2.0 (September 2026)  
+> **Version:** 3.0 (Updated September 2026)  
 > **Target CRM:** Frappe Cloud CRM (`https://crm-chm-lly.nvi.frappe.cloud`)  
-> **Core Stack:** Python 3.13, FastAPI, Pydantic v2, HTTPX, Pytest
+> **Backend:** Python 3.13, FastAPI, Pydantic v2, HTTPX, Pytest, Groq (Whisper + LLaMA)  
+> **Frontend:** React 18, Vite, Lucide Icons, Vanilla CSS  
+> **Cloud Deployments:** Netlify (Frontend), Render (Backend API), Supabase (PostgreSQL & Audio Storage)  
 
 ---
 
 ## 1. Project Purpose
 
-This system implements an automated telecaller intelligence pipeline that bridges telephony audio/webhooks with Frappe CRM:
-1. Ingests completed telephony call events (Exotel / Twilio compatible) or audio recordings.
-2. Transcribes voice audio to text (supporting English & Malayalam).
-3. Extracts structured business intelligence via LLM with strict validation.
-4. Synchronizes records into Frappe CRM (linking Call Logs to Leads, updating Lead status, and scheduling follow-up Tasks for telecallers).
-5. Provides an executive Manager Dashboard summarizing call volume, outcomes, objection trends, and follow-ups.
+This system implements an end-to-end, production-grade telecaller intelligence pipeline that bridges telephony audio/webhooks with Frappe CRM:
+1. **Call Ingestion:** Ingests completed telephony call events (Exotel / Twilio format) or direct audio recording uploads (MP3, WAV, M4A).
+2. **Speech-to-Text (STT):** High-speed transcription using **Groq Whisper** (`whisper-large-v3`) with multilingual support (English, Malayalam, etc.).
+3. **Structured AI Intelligence:** Real-time business intelligence extraction using **Groq LLM** (`openai/gpt-oss-20b`) with strict Pydantic schema validation:
+   - Call Summary & Customer Intent
+   - Categorized Call Outcome (`Converted`, `Follow-up`, `Interested`, `Not Interested`, `Callback Requested`, etc.)
+   - Assessed Lead Quality (`Hot`, `Warm`, `Cold`)
+   - Primary Objections & Discussion Key Points
+   - Next Operational Action & Recommended Follow-up Dates
+   - Telecaller Quality Observations & Manager Review Flags
+4. **CRM Synchronization:** Bi-directional integration with Frappe Cloud CRM:
+   - Look up existing Leads by caller/callee phone number.
+   - Create live `CRM Call Log` linked to the Lead.
+   - Attach formatted AI Intelligence summaries as timeline Comments.
+   - Auto-schedule follow-up `CRM Task` assigned to the telecaller with validated deadlines.
+   - Update CRM Lead stage and quality rating.
+5. **Manager Intelligence Dashboard:** Premium, responsive React frontend with analytics charts, audio playback streaming, full transcripts, and on-demand AI re-analysis.
 
 ---
 
 ## 2. Architecture & Pipeline Flow
 
 ```
-Telephony Webhook / Audio Input
-              │
-              ▼
-FastAPI Webhook Gateway (Idempotency Guard)
-              │
-              ▼
-Speech-to-Text Layer (Whisper / MockSTT)
-              │
-              ▼
-Structured LLM Extraction (Pydantic Schema)
-              │
-              ▼
-Frappe Cloud CRM REST Client (Token Auth)
-    ├── Lookup Lead by Phone Number
-    ├── Create CRM Call Log (Transcript + Structured AI Fields)
-    ├── Auto-schedule Follow-up CRM Task (Assigned to Telecaller)
-    └── Update Lead Stage & Quality
-              │
-              ▼
-Manager Dashboard
+┌──────────────────────────────────────────────────────────────────┐
+│                      Call Ingestion Sources                      │
+│   • Telephony Webhooks (Exotel / Twilio / Custom)                │
+│   • Direct Audio Recording Uploads (Vite React Web Dashboard)    │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  │
+                                  ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                 FastAPI Webhook & Processing API                 │
+│   • Strict Request-ID & Correlation Tracking (`X-Request-ID`)    │
+│   • Idempotency & Concurrency Guard (Memory / SQLite / Supabase) │
+│   • MIME & Payload Validation (25MB audio streaming limit)       │
+└──────────────────┬───────────────────────────────┬───────────────┘
+                   │                               │
+                   ▼                               ▼
+    ┌──────────────────────────────┐ ┌──────────────────────────────┐
+    │     Audio Storage Layer      │ │      Speech-to-Text Layer    │
+    │  • Local Filesystem /        │ │  • Groq Whisper              │
+    │  • Supabase Storage Bucket   │ │    (`whisper-large-v3`)      │
+    └──────────────────────────────┘ └─────────────┬────────────────┘
+                                                   │ Transcript
+                                                   ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                   Structured LLM Analysis Layer                  │
+│   • Groq LLaMA / GPT (`openai/gpt-oss-20b`)                      │
+│   • Strict Pydantic Schema Parsing with Enum Normalization       │
+│   • Auto-Healing of Mock Data to Real Intelligence               │
+└──────────────────────────────────┬───────────────────────────────┘
+                                   │
+                                   ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                   Frappe Cloud CRM Integration                   │
+│   ├── Lookup Lead by Phone Number (`CRM Lead`)                   │
+│   ├── Create CRM Call Log with Audio & Telecaller Attribution    │
+│   ├── Post AI Intelligence Timeline Comment                      │
+│   ├── Auto-schedule Follow-up CRM Task (`CRM Task`)              │
+│   └── Update Lead Stage & Quality Rating                         │
+└──────────────────────────────────┬───────────────────────────────┘
+                                   │
+                                   ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                     Executive Manager Dashboard                  │
+│   • KPI Cards: Total Calls, Follow-ups, Review Flags, Quality   │
+│   • Visual Charts: Outcomes Breakdown, Telecaller Activity       │
+│   • Call Intelligence Details Modal:                             │
+│       - Direct Byte Audio Player (Scrub/Seek with Range headers) │
+│       - Speech-to-Text Transcript Display                        │
+│       - Structured AI Summary, Intent, Key Points, Next Actions  │
+│       - On-Demand "Re-analyze Audio" Button                      │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-For the complete Mermaid system diagram, see [docs/architecture.md](docs/architecture.md).
+For complete Mermaid system and sequence diagrams, see [docs/architecture.md](docs/architecture.md).
 
 ---
 
@@ -51,6 +94,20 @@ For the complete Mermaid system diagram, see [docs/architecture.md](docs/archite
 
 ```
 e:\Hash
+├── frontend/                       # Vite + React Executive Dashboard
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── Dashboard.jsx       # Main Dashboard container with auto-refresh
+│   │   │   ├── Header.jsx          # Top navigation, live refresh & upload trigger
+│   │   │   ├── KPICards.jsx        # Summary KPI cards (Total, Follow-ups, etc.)
+│   │   │   ├── ChartsGrid.jsx      # Chart.js visual analytics (Outcomes, Agents)
+│   │   │   ├── CallsTable.jsx      # Recent calls table with search & filters
+│   │   │   ├── CallDetailsModal.jsx# Details modal with audio player & AI re-analysis
+│   │   │   └── UploadModal.jsx     # Recording upload modal with CRM contact picker
+│   │   ├── App.jsx
+│   │   └── index.css               # Design system & dark mode styles
+│   ├── package.json
+│   └── vite.config.js              # Vite bundler configuration with dev proxy
 ├── docs/
 │   ├── environment-inspection.md   # System inspection & tool verification
 │   └── architecture.md             # Mermaid architecture diagrams
@@ -60,22 +117,31 @@ e:\Hash
 ├── src/
 │   ├── __init__.py
 │   ├── config.py                   # Pydantic Settings & environment loader
-│   ├── schemas.py                  # Pydantic schemas (Webhook, CallIntelligence, PipelineResponse)
-│   ├── stt_service.py              # STT abstraction (MockSTT + real provider ready)
-│   ├── ai_service.py               # AI extraction abstraction (MockAI + real provider ready)
-│   ├── frappe_client.py            # Frappe CRM HTTPX client with Token Auth & simulation
-│   ├── pipeline.py                 # Core orchestration & idempotency cache
-│   └── server.py                   # FastAPI REST API
+│   ├── schemas.py                  # Pydantic schemas (CallIntelligence, PipelineResponse)
+│   ├── stt_service.py              # STT abstraction (Groq Whisper + MockSTT)
+│   ├── ai_service.py               # AI extraction abstraction (Groq LLM + MockAI)
+│   ├── frappe_client.py            # Frappe CRM HTTPX client with Token Auth & retry
+│   ├── pipeline.py                 # Core orchestration, background worker & idempotency
+│   ├── server.py                   # FastAPI REST API & dashboard backend
+│   ├── supabase_store.py           # Supabase PostgreSQL persistence & Storage integration
+│   ├── observability.py            # Structured JSON logging, metrics & correlation IDs
+│   └── worker.py                   # In-process asynchronous task worker
 ├── tests/
 │   ├── __init__.py
 │   ├── test_schemas.py             # Schema & field validation tests
 │   ├── test_ai_stt.py              # STT and AI service unit tests
+│   ├── test_audio_intelligence.py  # Audio processing & STT/AI pipeline tests
 │   ├── test_idempotency.py         # Webhook deduplication tests
-│   └── test_api.py                 # FastAPI endpoint integration tests
-├── .env.example
-├── .gitignore
-├── requirements.txt
-└── README.md
+│   ├── test_api.py                 # FastAPI endpoint integration tests
+│   ├── test_analytics.py           # Analytics & metrics calculation tests
+│   ├── test_phase5_1_concurrency.py# Concurrency & worker claiming tests
+│   ├── test_phase5_2_reliability.py# Reliability, retry & failure tests
+│   ├── test_phase5_3_observability.py# Metrics, health & logging tests
+│   └── test_phase5_hardening.py    # Production security & hardening tests
+├── Dockerfile                      # Production container image definition
+├── docker-compose.yml              # Multi-container orchestration
+├── requirements.txt                # Python dependencies
+└── README.md                       # Comprehensive documentation
 ```
 
 ---
@@ -83,149 +149,143 @@ e:\Hash
 ## 4. Environment Setup
 
 ### Prerequisites
-- Windows 11 / Linux / macOS
-- Python 3.13+
+- Python 3.11+ (Python 3.13 supported)
+- Node.js 18+ and npm
 - Git
 
-### 1. Create and Activate Virtual Environment
+### 1. Backend Setup
 
 ```powershell
-# In e:\Hash
+# In project root (e:\Hash)
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-```
 
-### 2. Install Dependencies
-
-```powershell
+# Install Python dependencies
 pip install -r requirements.txt
 ```
 
-### 3. Configure Environment Variables
-
-Copy `.env.example` to `.env`:
+### 2. Frontend Setup
 
 ```powershell
-cp .env.example .env
+cd frontend
+npm install
 ```
 
-Key environment variables in `.env`:
+### 3. Environment Configuration
 
-| Variable | Default | Description |
-| :--- | :--- | :--- |
-| `MOCK_MODE` | `true` | When `true`, runs offline without external API keys |
-| `FRAPPE_BASE_URL` | `https://crm-chm-lly.nvi.frappe.cloud` | Target Frappe Cloud C| `AI_API_KEY` | `""` | API key for LLM structured extraction |
-| `STT_PROVIDER` | `mock` | `mock`, `groq`, `openai`, or `gemini` |
-| `STT_API_KEY` | `""` | API key for Speech-to-Text Whisper transcription |
-| `ALLOWED_ORIGINS` | `["http://localhost:8000", ...]` | Explicit CORS allowed origins list |
-| `STORE_TRANSCRIPT_IN_CRM` | `truncated` | `full`, `truncated` (500 char cap), or `none` |
-| `ADMIN_API_TOKEN` | `""` | Optional admin token to protect `/api/models` |
-| `IDEMPOTENCY_TTL_SECONDS` | `86400` | Idempotency record expiration time (24h default) |
-| `IDEMPOTENCY_MAX_ITEMS` | `1000` | Maximum capacity for in-memory idempotency cache (LRU) |
+Copy `.env.example` to `.env` in the root directory:
+
+```env
+# Application Settings
+APP_ENV=development
+MOCK_MODE=false
+HOST=0.0.0.0
+PORT=8000
+
+# Frappe Cloud CRM Configuration
+FRAPPE_BASE_URL=https://crm-chm-lly.nvi.frappe.cloud
+FRAPPE_API_KEY=your_frappe_api_key
+FRAPPE_API_SECRET=your_frappe_api_secret
+
+# AI & Speech-to-Text (Groq)
+AI_PROVIDER=groq
+AI_API_KEY=gsk_your_groq_api_key
+STT_PROVIDER=groq
+STT_API_KEY=gsk_your_groq_api_key
+
+# Supabase (Optional for Cloud Persistence)
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_KEY=your-supabase-service-key
+IDEMPOTENCY_BACKEND=supabase
+```
 
 ---
 
-## 5. Running the Application
+## 5. Running Locally
 
-### Start FastAPI Server
-
+### Start Backend API Server
 ```powershell
-uvicorn src.server:app --reload --host 0.0.0.0 --port 8000
+.\.venv\Scripts\python.exe -m uvicorn src.server:app --reload --host 0.0.0.0 --port 8000
 ```
-
-- API Documentation (Swagger UI): [http://localhost:8000/docs](http://localhost:8000/docs)
-- Manager Dashboard UI: [http://localhost:8000/dashboard](http://localhost:8000/dashboard)
+- Interactive Swagger UI: [http://localhost:8000/docs](http://localhost:8000/docs)
 - Health Check: [http://localhost:8000/health](http://localhost:8000/health)
 
-### API Endpoints
-- `POST /api/v1/telephony/webhook`: Core entrypoint for Exotel/Twilio call completion webhooks (Idempotent deduplication guard).
-- `POST /api/v1/telephony/process-audio`: Direct audio upload (WAV, MP3, M4A) with 25MB streaming cap, MIME validation, and empty-file protection.
-- `GET /api/v1/dashboard/metrics`: Analytics endpoint returning aggregated KPIs, telecaller metrics, and follow-ups.
-- `GET /api/v1/dashboard/calls`: Returns feed of recent calls processed by the pipeline.
-- `GET /api/models`: Public safe model metadata endpoint protected by optional `X-Admin-Token`.
+### Start Frontend Development Server
+```powershell
+cd frontend
+npm run dev
+```
+- Access Frontend Dashboard: [http://localhost:5173](http://localhost:5173)
 
-### Test the Webhook with Sample Data
+---
 
-Using PowerShell or `curl.exe`:
+## 6. Core REST API Endpoints
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `POST` | `/api/v1/telephony/webhook` | Ingests telephony call event webhooks with idempotency guard. |
+| `POST` | `/api/v1/telephony/process-audio` | Uploads audio recording (`.mp3`, `.wav`, `.m4a`) with CRM metadata. |
+| `GET` | `/api/v1/dashboard/metrics` | Returns aggregated KPIs, outcome breakdown, and lead quality metrics. |
+| `GET` | `/api/v1/dashboard/calls` | Returns recent call feed with automatic background auto-healing. |
+| `GET` | `/api/v1/dashboard/calls/{call_id}/details` | Full call record, transcript, audio path, and AI intelligence. |
+| `GET` | `/api/v1/dashboard/calls/{call_id}/intelligence` | Structured AI intelligence extracted for a call. |
+| `GET` | `/api/v1/dashboard/calls/{call_id}/recording` | Direct byte streaming of audio recording with range/seek headers. |
+| `POST` | `/api/v1/dashboard/calls/{call_id}/reprocess` | Forces re-transcription and AI re-analysis on recorded audio. |
+| `GET` | `/api/v1/crm/contacts` | Fetches active CRM Contacts/Leads for upload selection. |
+| `GET` | `/api/v1/crm/agents` | Fetches registered CRM telecallers/users. |
+| `GET` | `/health` | Application liveness probe returning provider configurations. |
+| `GET` | `/ready` | Application readiness probe validating backend dependencies. |
+| `GET` | `/metrics` | Prometheus/JSON telemetry metrics. |
+
+---
+
+## 7. Running the Automated Test Suite
+
+The project includes an extensive test suite covering schema validation, STT/AI abstractions, idempotency, CRM integration, concurrency, and reliability:
 
 ```powershell
-curl.exe -X POST http://localhost:8000/api/v1/telephony/webhook `
-  -H "Content-Type: application/json" `
-  -d "@samples/mock_webhook_payload.json"
+# Run all 67 offline unit tests
+.\.venv\Scripts\python.exe -m pytest --ignore=tests/test_live_frappe.py -v
 ```
 
----
-
-## 6. Running the Test Suite
-
-Run the automated test suite with pytest:
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest -v
-```
-
-Tests cover:
-- Pydantic schema validation & enum constraints
-- Webhook payload validation & rejection of malformed inputs
-- Audio upload security (empty file rejection, 25MB limit, MIME & extension checks)
-- STT transcription behavior (English & Malayalam)
-- LLM structured analysis logic
-- Idempotency guard, TTL expiration, capacity bounding, and duplicate webhook suppression
-- Frappe CRM client error handling (raise_for_status validation on comments, non-fatal task failure)
-- FastAPI HTTP endpoint contracts (`/health`, `/webhook`, `/process-audio`, `/api/models`, `/dashboard`)
+### Test Coverage Highlights:
+- **`test_schemas.py`**: Pydantic schema validation, phone number formatting, and enum constraints.
+- **`test_ai_stt.py` & `test_audio_intelligence.py`**: STT transcription, LLM extraction, empty file checks, and 25MB streaming limit.
+- **`test_idempotency.py`**: Deduplication of duplicate webhook events across TTL windows.
+- **`test_phase5_1_concurrency.py`**: Worker concurrency protection and job claiming.
+- **`test_phase5_2_reliability.py`**: Retry mechanisms, exponential backoff, and partial failure isolation.
+- **`test_phase5_3_observability.py`**: Metric counters, correlation IDs, and health checks.
+- **`test_api.py`**: FastAPI HTTP endpoints, CORS headers, and error responses.
 
 ---
 
-## 7. Mock Mode Usage
+## 8. Deployment Architecture
 
-`MOCK_MODE=true` is enabled by default. This ensures:
-- Full pipeline execution runs offline without paid external API keys.
-- Leads from the live Frappe instance (Carol Smith, Bob Martinez, etc.) are pre-seeded in the mock store.
-- Telephony webhooks, speech transcription, structured analysis, and follow-up generation are fully testable.
-- Once real API credentials (`FRAPPE_API_KEY`, `AI_API_KEY`) are supplied, setting `MOCK_MODE=false` connects the pipeline directly to Frappe Cloud and external AI providers.
+### Frontend (Netlify)
+- **Live URL:** [https://ai-call-intelligence.netlify.app](https://ai-call-intelligence.netlify.app)
+- Automatically deploys from `main` branch with build command `npm run build` in `frontend/`.
+- Configured with `VITE_API_BASE_URL` pointing to the live Render backend.
 
----
-
-## 8. Live Frappe CRM Setup
-
-To connect to the live CRM instance at `https://crm-chm-lly.nvi.frappe.cloud`:
-1. Generate an API Key and Secret from your Frappe User profile (in Desk -> Settings -> API Access).
-2. Add them to `.env` as `FRAPPE_API_KEY` and `FRAPPE_API_SECRET`.
-3. Set `MOCK_MODE=false`.
-4. Ensure target Leads exist in the CRM (matching phone numbers).
-The pipeline will now lookup live leads, create actual CRM Call Logs, update Lead stages, and assign Follow-up Tasks to CRM Users.
-
----
-
-## 9. Current Status & Verification
-
-- [x] Phase 1: Foundation scaffolded (schemas, STT/AI interfaces, Frappe client, pipeline, FastAPI server).
-- [x] Phase 1: Webhook idempotency and deduplication guard implemented.
-- [x] Phase 1: Connect live Frappe Cloud credentials and verify live REST write-back.
-- [x] Phase 2: Implement Manager Dashboard UI (http://localhost:8000/dashboard).
-- [x] Phase 2: Implement Backend Analytics (`/metrics`, `/calls`).
-- [x] Phase 4: Full automated test suite passing (20 baseline regression tests).
-- [x] Phase 5.1: Production Hardening — Security & Reliability (SEC-01 through SEC-05, REL-01).
-- [x] Phase 5.2: Production Hardening — Reliability & Data Integrity (SEC-06 Audio Validation, REL-02 Frappe Comment Status Checks, REL-03 Idempotency TTL & Bounding & SQLite Store).
-- [x] Phase 5.3: Observability & Production Readiness (Structured JSON Logging, Request Correlation ID, `/ready` and `/metrics` Endpoints, AppError Classification, Production Docker & Compose).
-- [x] Automated test suite passing (52 passing tests, 0 failures).
+### Backend (Render)
+- **Live API:** `https://ai-call-intelligence-api.onrender.com`
+- Dockerized deployment built directly from [Dockerfile](Dockerfile).
+- Environment variables configured in Render Dashboard:
+  - `MOCK_MODE=false`
+  - `AI_PROVIDER=groq`
+  - `STT_PROVIDER=groq`
+  - `AI_API_KEY=gsk_...`
+  - `STT_API_KEY=gsk_...`
+  - `FRAPPE_BASE_URL=https://crm-chm-lly.nvi.frappe.cloud`
+  - `FRAPPE_API_KEY=...`
+  - `FRAPPE_API_SECRET=...`
 
 ---
 
-## 10. Observability & Monitoring
+## 9. Key Technical Features & Safeguards
 
-### Endpoints
-- **Liveness (`GET /health`)**: Returns `200 OK` and active environment metadata when process is alive.
-- **Readiness (`GET /ready`)**: Returns `200 OK` when dependencies (CRM credentials, AI/STT keys, storage) are valid. Returns `503 Service Unavailable` with structured diagnostic reasons if unconfigured.
-- **Application Metrics (`GET /metrics`)**: Exposes structured operational counters, processing durations, and failure classification metrics without exposing PII or unbounded labels.
+1. **Direct Audio Streaming:** The `/recording` endpoint serves audio bytes directly with `Accept-Ranges: bytes` headers, avoiding CORS issues with third-party presigned redirects and enabling continuous audio scrubbing.
+2. **Auto-Healing Intelligence:** Calls loaded in the dashboard automatically detect mock placeholder data and re-transcribe/re-analyze using real Groq Whisper and LLM models.
+3. **Resilient CRM Call Log Creation:** If an agent name is not a registered user in Frappe CRM, the client automatically falls back to create the call log without link validation errors, ensuring zero data loss.
+4. **Duplicate Prevention:** Incoming telephony webhooks are deduplicated via unique provider call IDs, preventing duplicate CRM Call Logs or duplicate tasks.
+5. **Observability:** Every request carries an `X-Request-ID` correlation tag traced across application logs and API error responses.
 
-### Request Correlation
-Every request accepts or generates a validated `X-Request-ID` (`req_<hex16>`). The correlation ID propagates through async contexts and is returned in HTTP response headers and structured JSON logs.
-
-### Production Deployment & Idempotency Store
-- **Single-Worker In-Memory (`IDEMPOTENCY_BACKEND=memory`)**: High-speed, TTL-expiring bounded LRU cache for development or single-worker deployments.
-- **Single-Instance SQLite (`IDEMPOTENCY_BACKEND=sqlite`)**: Persistent, file-backed idempotency surviving process restarts.
-- **Containerized Run**:
-  ```powershell
-  docker-compose up -d --build
-  ```
