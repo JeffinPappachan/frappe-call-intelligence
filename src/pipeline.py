@@ -5,7 +5,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections import OrderedDict
-from datetime import datetime
+from datetime import datetime, UTC
 
 from src.ai_service import AIService, get_ai_service
 from src.frappe_client import FrappeCRMClient, get_frappe_client
@@ -334,7 +334,7 @@ class CallIntelligencePipeline:
         self.idempotency_store.set("SEED-002", c2)
         self.idempotency_store.set("SEED-003", c3)
 
-    def accept_call(self, event: TelephonyWebhookPayload) -> PipelineResponse:
+    def accept_call(self, event: TelephonyWebhookPayload, recording_storage_path: str | None = None) -> PipelineResponse:
         """Synchronously accept a call webhook, performing idempotency checks and saving initial state."""
         from src.schemas import ProcessingStatus
 
@@ -364,11 +364,13 @@ class CallIntelligencePipeline:
             provider_call_id=call_id,
             direction=event.direction,
             duration_seconds=event.duration_seconds,
-            event_timestamp=event.event_timestamp or datetime.now(),
+            event_timestamp=event.event_timestamp or datetime.now(UTC),
             agent_id=event.agent_id,
             processing_status=ProcessingStatus.RECEIVED,
             message="Call accepted",
             event_payload=event.model_dump(mode="json"),
+            recording_storage_path=recording_storage_path,
+            matched_lead=f"Contact ({event.lead_id})" if event.lead_id else None,
         )
         self.idempotency_store.set(call_id, response)
         return response
@@ -432,6 +434,7 @@ class CallIntelligencePipeline:
         event: TelephonyWebhookPayload,
         raw_audio: bytes | None = None,
         audio_filename: str | None = None,
+        worker_id: str | None = None,
     ) -> None:
         """Process a call event asynchronously in the background."""
         from src.observability import (
@@ -450,9 +453,20 @@ class CallIntelligencePipeline:
             return
 
         # Double check it isn't already processed or processing (Concurrency protection)
-        if cached.processing_status in [ProcessingStatus.PROCESSING, ProcessingStatus.COMPLETED]:
+        if cached.processing_status == ProcessingStatus.COMPLETED:
             logger.info(f"Skipping background processing for {call_id}: status is {cached.processing_status}")
             return
+
+        if cached.processing_status == ProcessingStatus.PROCESSING:
+            if worker_id and cached.worker_id == worker_id:
+                # The current worker owns the job, we can proceed
+                pass
+            elif not worker_id and not cached.worker_id:
+                # Direct unit test path where no worker is involved
+                pass
+            else:
+                logger.info(f"Skipping background processing for {call_id}: status is {cached.processing_status} owned by {cached.worker_id}")
+                return
 
         # Update state to PROCESSING
         cached.processing_status = ProcessingStatus.PROCESSING
@@ -464,7 +478,20 @@ class CallIntelligencePipeline:
             if not cached.transcript:
                 stt_status = "pending"
                 try:
+                    # If we don't have raw_audio but we have a storage path in Supabase, fetch it.
+                    if not raw_audio and cached.recording_storage_path:
+                        from src.config import get_settings
+                        if get_settings().idempotency_backend == "supabase":
+                            from src.supabase_store import download_audio_from_supabase
+                            fetched_audio = download_audio_from_supabase(cached.recording_storage_path)
+                            if fetched_audio:
+                                raw_audio = fetched_audio
+
                     audio_source = raw_audio or event.recording_url or "mock_call.wav"
+
+                    if not audio_filename and cached.recording_storage_path:
+                        audio_filename = cached.recording_storage_path.split("/")[-1]
+
                     stt_meta = {
                         "call_id": call_id,
                         "audio_filename": audio_filename,

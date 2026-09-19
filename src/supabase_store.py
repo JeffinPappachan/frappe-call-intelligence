@@ -306,3 +306,16 @@ def upload_audio_to_supabase(call_id: str, raw_audio: bytes | None, recording_ur
     except Exception as exc:
         logger.error(f"[Supabase Storage] Failed to upload audio for {call_id}: {exc}")
         return None
+
+def download_audio_from_supabase(storage_path: str) -> bytes | None:
+    """Download audio bytes from Supabase storage."""
+    from src.config import get_supabase_client
+    client = get_supabase_client()
+    if not client:
+        return None
+    try:
+        res = client.storage.from_("recordings").download(storage_path)
+        return res
+    except Exception as exc:
+        logger.error(f"[Supabase Storage] Failed to download audio from {storage_path}: {exc}")
+        return None

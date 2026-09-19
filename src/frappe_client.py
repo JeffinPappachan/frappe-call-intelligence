@@ -167,6 +167,51 @@ class FrappeCRMClient:
             logger.warning(f"[FrappeCRMClient] Error querying CRM Lead: {exc}")
             return None
 
+    async def get_crm_contacts(self) -> list[dict[str, Any]]:
+        """Fetch a list of CRM Leads (used as Contacts) from Frappe."""
+        if self.mock_mode:
+            return self.MOCK_LEADS
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                url = f"{self.base_url}/api/resource/CRM Lead"
+                params: dict[str, str | int | float | bool | None] = {
+                    "fields": '["name","lead_name","email","mobile_no","organization","lead_owner","status"]',
+                    "limit_page_length": 100,
+                    "order_by": "creation desc"
+                }
+                response = await client.get(url, headers=self._get_headers(), params=params)
+                response.raise_for_status()
+                return response.json().get("data", [])
+        except Exception as exc:
+            logger.warning(f"[FrappeCRMClient] Error querying CRM Leads: {exc}")
+            return []
+
+    async def get_crm_agents(self) -> list[dict[str, Any]]:
+        """Fetch a list of enabled users (Agents) from Frappe."""
+        if self.mock_mode:
+            return [
+                {"name": "john.demo@example.com", "full_name": "John Parker"},
+                {"name": "sarah.demo@example.com", "full_name": "Sarah Connor"},
+                {"name": "emily.demo@example.com", "full_name": "Emily Chen"},
+                {"name": "jeffinpappachan110@gmail.com", "full_name": "Jeffin Pappachan"}
+            ]
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                url = f"{self.base_url}/api/resource/User"
+                params: dict[str, str | int | float | bool | None] = {
+                    "fields": '["name","email","full_name"]',
+                    "filters": '[["enabled","=",1]]',
+                    "limit_page_length": 100,
+                }
+                response = await client.get(url, headers=self._get_headers(), params=params)
+                response.raise_for_status()
+                return response.json().get("data", [])
+        except Exception as exc:
+            logger.warning(f"[FrappeCRMClient] Error querying Users: {exc}")
+            return []
+
     async def get_call_log_by_provider_id(self, provider_call_id: str) -> dict[str, Any] | None:
         """Check if a Call Log with this provider ID already exists in Frappe CRM (Idempotency)."""
         if self.mock_mode:

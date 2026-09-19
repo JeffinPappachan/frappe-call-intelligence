@@ -1,28 +1,19 @@
-import React, { useRef } from 'react';
+import React, { useState } from 'react';
 import { PhoneCall, RefreshCw, Play, Upload } from 'lucide-react';
+import UploadModal from './UploadModal';
 import './Header.css';
 
 const Header = ({ onRefresh, onSimulate, onUpload, isRefreshing }) => {
-  const fileInputRef = useRef(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
 
   const handleUploadClick = () => {
-    if (fileInputRef.current) {
-      fileInputRef.current.click();
-    }
-  };
-
-  const handleFileChange = (e) => {
-    const file = e.target.files[0];
-    if (file && onUpload) {
-      onUpload(file);
-    }
-    // Reset the input
-    e.target.value = '';
+    setIsModalOpen(true);
   };
 
   return (
-    <header className="app-header">
-      <div className="logo">
+    <>
+      <header className="app-header">
+        <div className="logo">
         <PhoneCall size={24} />
         Manager Call Intelligence
       </div>
@@ -31,21 +22,20 @@ const Header = ({ onRefresh, onSimulate, onUpload, isRefreshing }) => {
           <RefreshCw size={18} className={isRefreshing ? 'spinner-icon' : ''} /> 
           Refresh
         </button>
-        <button onClick={onSimulate} className="btn-primary" id="simulateBtn">
+        <button onClick={onSimulate} className="btn-secondary" id="simulateBtn">
           <Play size={18} /> Simulate Call
         </button>
-        <button onClick={handleUploadClick}>
+        <button onClick={handleUploadClick} className="btn-primary">
           <Upload size={18} /> Upload Audio
         </button>
-        <input 
-          type="file" 
-          ref={fileInputRef} 
-          accept="audio/*" 
-          className="hidden" 
-          onChange={handleFileChange} 
-        />
       </div>
-    </header>
+      </header>
+      <UploadModal 
+        isOpen={isModalOpen} 
+        onClose={() => setIsModalOpen(false)} 
+        onUpload={onUpload} 
+      />
+    </>
   );
 };
 

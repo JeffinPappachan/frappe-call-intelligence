@@ -2,26 +2,39 @@ import React, { useState, useEffect } from 'react';
 import { X } from 'lucide-react';
 import './CallDetailsModal.css';
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
+
 const CallDetailsModal = ({ call, onClose }) => {
-  const [intelligence, setIntelligence] = useState(null);
+  const [callDetails, setCallDetails] = useState(call || null);
+  const [intelligence, setIntelligence] = useState(call?.intelligence || null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (call) {
-      // Use existing intelligence if available initially
+      setCallDetails(call);
       setIntelligence(call.intelligence || null);
       
       const fetchId = call.provider_call_id || call.frappe_call_log_id;
       if (fetchId) {
         setLoading(true);
-        const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
-        fetch(`${API_BASE_URL}/api/v1/dashboard/calls/${encodeURIComponent(fetchId)}/intelligence`)
-          .then(res => res.json())
+        fetch(`${API_BASE_URL}/api/v1/dashboard/calls/${encodeURIComponent(fetchId)}/details`)
+          .then(res => {
+            if (!res.ok) {
+              // Fallback to intelligence endpoint if details endpoint not present
+              return fetch(`${API_BASE_URL}/api/v1/dashboard/calls/${encodeURIComponent(fetchId)}/intelligence`)
+                .then(r => r.ok ? r.json() : null)
+                .then(intel => intel ? { intelligence: intel } : null);
+            }
+            return res.json();
+          })
           .then(data => {
-            setIntelligence(data);
+            if (data) {
+              if (data.intelligence) setIntelligence(data.intelligence);
+              if (data.transcript) setCallDetails(prev => ({ ...prev, ...data }));
+            }
           })
           .catch(err => {
-            console.error("Failed to fetch detailed intelligence:", err);
+            console.error("Failed to fetch detailed call data:", err);
           })
           .finally(() => {
             setLoading(false);
@@ -77,7 +90,30 @@ const CallDetailsModal = ({ call, onClose }) => {
               <div style={{ marginBottom: '1.5rem' }}>
                 <h3 style={{ fontSize: '1rem', marginBottom: '0.5rem', color: '#fff' }}>Summary</h3>
                 <p style={{ color: 'var(--text-primary)', lineHeight: '1.5' }}>
-                  {intelligence.summary || 'No summary available.'}
+                  {intelligence.call_summary || 'No summary available.'}
+                </p>
+              </div>
+
+              <div style={{ marginBottom: '1.5rem' }}>
+                <h3 style={{ fontSize: '1rem', marginBottom: '0.5rem', color: '#fff' }}>Customer Intent</h3>
+                <p style={{ color: 'var(--text-primary)', lineHeight: '1.5' }}>
+                  {intelligence.customer_intent || 'N/A'}
+                </p>
+              </div>
+
+              {intelligence.key_points && intelligence.key_points.length > 0 && (
+                <div style={{ marginBottom: '1.5rem' }}>
+                  <h3 style={{ fontSize: '1rem', marginBottom: '0.5rem', color: '#fff' }}>Key Points</h3>
+                  <ul style={{ color: 'var(--text-primary)', lineHeight: '1.8', paddingLeft: '1.2rem' }}>
+                    {intelligence.key_points.map((pt, i) => <li key={i}>{pt}</li>)}
+                  </ul>
+                </div>
+              )}
+
+              <div style={{ marginBottom: '1.5rem' }}>
+                <h3 style={{ fontSize: '1rem', marginBottom: '0.5rem', color: '#fff' }}>Next Action</h3>
+                <p style={{ color: 'var(--text-primary)', lineHeight: '1.5' }}>
+                  {intelligence.next_action || 'N/A'}
                 </p>
               </div>
 
@@ -95,7 +131,7 @@ const CallDetailsModal = ({ call, onClose }) => {
               <div>
                 <h3 style={{ fontSize: '1rem', marginBottom: '0.5rem', color: '#fff' }}>Audio Transcript</h3>
                 <div className="transcript-box">
-                  {intelligence.audio_transcript || 'No transcript available.'}
+                  {callDetails?.transcript || call?.transcript || 'No transcript available.'}
                 </div>
               </div>
             </>

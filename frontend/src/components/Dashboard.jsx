@@ -49,6 +49,13 @@ const Dashboard = () => {
 
   useEffect(() => {
     refreshDashboard();
+    
+    const intervalId = setInterval(() => {
+      fetchMetrics();
+      fetchCalls();
+    }, 5000);
+
+    return () => clearInterval(intervalId);
   }, []);
 
   const handleSimulateCall = async () => {
@@ -73,15 +80,18 @@ const Dashboard = () => {
     }
   };
 
-  const handleUploadAudio = async (file) => {
-    const formData = new FormData();
-    formData.append('file', file);
+  const handleUploadAudio = async (formData) => {
     try {
-      await fetch(`${API_BASE_URL}/api/v1/telephony/process-audio`, {
+      const response = await fetch(`${API_BASE_URL}/api/v1/telephony/process-audio`, {
         method: 'POST',
         body: formData
       });
-      refreshDashboard();
+      if (!response.ok) {
+        console.error("Upload returned non-OK status", await response.text());
+      }
+      // Brief delay to allow Supabase persistence to settle before refreshing
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      await refreshDashboard();
     } catch (err) {
       console.error("Upload failed", err);
     }

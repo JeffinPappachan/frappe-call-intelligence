@@ -3,7 +3,7 @@ import logging
 import os
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, UTC
 from pathlib import Path
 
 from fastapi import (
@@ -177,6 +177,20 @@ async def get_metrics():
     return metrics.get_metrics()
 
 
+@app.get("/api/v1/crm/contacts", tags=["CRM"])
+async def get_crm_contacts():
+    from src.frappe_client import get_frappe_client
+    client = get_frappe_client()
+    return {"data": await client.get_crm_contacts()}
+
+
+@app.get("/api/v1/crm/agents", tags=["CRM"])
+async def get_crm_agents():
+    from src.frappe_client import get_frappe_client
+    client = get_frappe_client()
+    return {"data": await client.get_crm_agents()}
+
+
 @app.post(
     "/api/v1/telephony/webhook",
     response_model=PipelineResponse,
@@ -266,6 +280,8 @@ async def process_audio(
     direction: CallDirection | None = Form(default=CallDirection.OUTBOUND),
     duration_seconds: int | None = Form(default=60),
     provider_call_id: str | None = Form(default=None),
+    lead_id: str | None = Form(default=None),
+    event_timestamp: str | None = Form(default=None),
 ):
     """Accept an uploaded audio recording and run speech-to-text, LLM extraction, and CRM sync.
 
@@ -349,6 +365,13 @@ async def process_audio(
                 extra={"call_id": call_id, "request_id": req_id},
             )
 
+        dt = datetime.now(UTC)
+        if event_timestamp:
+            try:
+                dt = datetime.fromisoformat(event_timestamp)
+            except ValueError:
+                pass
+
         event = TelephonyWebhookPayload(
             provider_call_id=call_id,
             telephony_provider="manual_upload",
@@ -360,17 +383,18 @@ async def process_audio(
             recording_url=None,
             agent_id=agent_id,
             call_type="sales_enquiry",
-            event_timestamp=datetime.now(),
+            event_timestamp=dt,
+            lead_id=lead_id,
         )
 
-        pipeline = get_pipeline()
+        def _sync_accept_and_upload():
+            """Run blocking Supabase operations in a thread to avoid blocking the event loop."""
+            pipeline = get_pipeline()
 
-        # Accept call and persist initial state synchronously
-        result = pipeline.accept_call(event=event)
-
-        # Enqueue background task is handled by external workers (Phase 5)
-        if not result.idempotent_replay:
-            # For manual uploads, we MUST upload the audio to storage now so the worker can access it
+            # Enqueue background task is handled by external workers (Phase 5)
+            # For manual uploads, we MUST upload the audio to storage BEFORE accepting the call
+            # to prevent the worker from claiming a job without an audio file path.
+            storage_path = None
             from src.config import get_settings
             if get_settings().idempotency_backend == "supabase":
                 from src.supabase_store import upload_audio_to_supabase
@@ -380,9 +404,14 @@ async def process_audio(
                     recording_url=None,
                     filename=filename
                 )
-                if storage_path:
-                    result.recording_storage_path = storage_path
-                    pipeline.idempotency_store.set(call_id, result)
+
+            # Accept call and persist initial state synchronously
+            result = pipeline.accept_call(event=event, recording_storage_path=storage_path)
+
+            return result
+
+        import asyncio
+        result = await asyncio.to_thread(_sync_accept_and_upload)
 
         return result
     except AppError as app_err:
@@ -511,6 +540,21 @@ async def get_call_intelligence(call_id: str):
         return cached.intelligence
 
     raise HTTPException(status_code=404, detail="Intelligence not found for this call")
+
+
+@app.get(
+    "/api/v1/dashboard/calls/{call_id}/details",
+    response_model=PipelineResponse,
+    tags=["Analytics"],
+)
+async def get_call_details(call_id: str):
+    """Retrieve full call details including transcript, recording storage path, and intelligence."""
+    pipeline = get_pipeline()
+    cached = pipeline.idempotency_store.get(call_id)
+    if cached:
+        return cached
+
+    raise HTTPException(status_code=404, detail="Call not found")
 
 
 @app.get(
