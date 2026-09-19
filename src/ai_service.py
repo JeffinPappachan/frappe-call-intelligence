@@ -165,11 +165,7 @@ class RealAIService(AIService):
 def get_ai_service(settings: Settings | None = None) -> AIService:
     """Factory to retrieve configured AI intelligence provider."""
     cfg = settings or get_settings()
-    if cfg.mock_mode or cfg.ai_provider == "mock":
+    if cfg.mock_mode or cfg.ai_provider == "mock" or not cfg.ai_api_key:
         return MockAIService()
-    if not cfg.ai_api_key:
-        raise ValueError(
-            "AI provider is not configured. Please configure the AI API key or explicitly enable mock mode."
-        )
     return RealAIService(provider=cfg.ai_provider, api_key=cfg.ai_api_key)
 

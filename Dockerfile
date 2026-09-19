@@ -3,7 +3,8 @@ FROM python:3.11-slim
 # Prevent Python from writing .pyc files and enable unbuffered output
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    APP_ENV=production
+    APP_ENV=production \
+    MOCK_MODE=false
 
 WORKDIR /app
 

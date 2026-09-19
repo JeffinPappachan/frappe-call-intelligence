@@ -15,7 +15,7 @@ class Settings(BaseSettings):
 
     # Core Application Settings
     app_env: str = "development"
-    mock_mode: bool = True
+    mock_mode: bool = False
     host: str = "0.0.0.0"
     port: int = 8000
 

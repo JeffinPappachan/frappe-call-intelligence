@@ -496,6 +496,17 @@ async def process_audio(
                     filename=filename
                 )
 
+            # Fallback to local storage if Supabase upload was not performed or failed
+            if not storage_path:
+                try:
+                    os.makedirs(get_settings().audio_storage_dir, exist_ok=True)
+                    local_path = os.path.join(get_settings().audio_storage_dir, f"{call_id}_{filename}")
+                    with open(local_path, "wb") as f:
+                        f.write(audio_bytes)
+                    storage_path = local_path
+                except Exception as exc:
+                    logger.warning(f"Could not save local copy of audio for {call_id}: {exc}")
+
             # Accept call and persist initial state synchronously
             result = pipeline.accept_call(event=event, recording_storage_path=storage_path)
 
@@ -662,29 +673,58 @@ async def get_call_details(call_id: str):
     tags=["Analytics"],
 )
 async def get_call_recording(call_id: str):
-    """Retrieve a short-lived signed URL for a specific call recording."""
+    """Retrieve or stream the audio recording for a call directly to prevent CORS/redirect player errors."""
     pipeline = get_pipeline()
     cached = pipeline.idempotency_store.get(call_id)
-    if not cached or not cached.recording_storage_path:
+    if not cached:
+        raise HTTPException(status_code=404, detail="Call not found")
+
+    storage_path = cached.recording_storage_path
+    if not storage_path:
         raise HTTPException(status_code=404, detail="Recording not found")
 
+    # 1. Local file path check
+    if os.path.exists(storage_path):
+        from fastapi.responses import FileResponse
+        return FileResponse(storage_path)
+
+    local_path = os.path.join(settings.audio_storage_dir, os.path.basename(storage_path))
+    if os.path.exists(local_path):
+        from fastapi.responses import FileResponse
+        return FileResponse(local_path)
+
+    # 2. Supabase storage check - stream bytes directly to client with CORS and range support
     from src.config import get_supabase_client
-    from fastapi.responses import RedirectResponse
 
     client = get_supabase_client()
-    if not client:
-        raise HTTPException(status_code=500, detail="Storage not configured")
+    if client:
+        try:
+            audio_bytes = client.storage.from_("recordings").download(storage_path)
+            if audio_bytes:
+                ext = os.path.splitext(storage_path)[1].lower()
+                mime_map = {
+                    ".wav": "audio/wav",
+                    ".mp3": "audio/mpeg",
+                    ".m4a": "audio/m4a",
+                    ".mp4": "audio/mp4",
+                    ".ogg": "audio/ogg",
+                    ".webm": "audio/webm",
+                    ".flac": "audio/flac",
+                }
+                media_type = mime_map.get(ext, "audio/mpeg")
+                return Response(
+                    content=audio_bytes,
+                    media_type=media_type,
+                    headers={
+                        "Accept-Ranges": "bytes",
+                        "Content-Length": str(len(audio_bytes)),
+                        "Content-Disposition": f'inline; filename="{os.path.basename(storage_path)}"',
+                    },
+                )
+        except Exception as exc:
+            logger.warning(f"Failed to stream recording from Supabase storage for {call_id}: {exc}")
 
-    try:
-        # Generate 1-hour signed URL (3600 seconds)
-        res = client.storage.from_("recordings").create_signed_url(cached.recording_storage_path, 3600)
-        url = res.get("signedURL")
-        if not url:
-            raise ValueError("Could not generate signed URL")
-        return RedirectResponse(url)
-    except Exception as exc:
-        logger.error(f"Error generating signed URL for {call_id}: {exc}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve recording url") from exc
+    raise HTTPException(status_code=404, detail="Recording not found")
 
 
 

@@ -50,3 +50,7 @@ temp_audio/
 # Local diagnostic and inspection scripts
 check_log*.py
 inspect_*.py
+
+# Runtime uploaded audio files
+samples/manual_*
+
