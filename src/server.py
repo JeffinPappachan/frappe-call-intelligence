@@ -402,11 +402,7 @@ async def process_audio(
 )
 async def get_dashboard_metrics():
     """Aggregate call metrics from the local idempotency store or live CRM."""
-    if not settings.mock_mode:
-        frappe = get_frappe_client()
-        calls = await frappe.get_recent_call_logs(limit=0)
-    else:
-        calls = get_pipeline().idempotency_store.get_all()
+    calls = get_pipeline().idempotency_store.get_all(limit=100)
 
 
     total = len(calls)
@@ -475,11 +471,7 @@ async def get_dashboard_metrics():
 )
 async def get_dashboard_calls():
     """Get recent calls feed for the dashboard."""
-    if not settings.mock_mode:
-        frappe = get_frappe_client()
-        calls = await frappe.get_recent_call_logs(limit=0)
-    else:
-        calls = get_pipeline().idempotency_store.get_all()
+    calls = get_pipeline().idempotency_store.get_all(limit=50)
 
     # Sort by timestamp descending
     calls.sort(
@@ -501,23 +493,37 @@ async def get_call_intelligence(call_id: str):
     if cached and cached.intelligence:
         return cached.intelligence
 
-    if not settings.mock_mode:
-        frappe = get_frappe_client()
-        import httpx
-        async with httpx.AsyncClient() as client:
-            # If call_id is a provider_call_id, resolve Frappe CRM Call Log name
-            target_name = call_id
-            if not call_id.startswith("CALL-LOG-") and not call_id.startswith("CRM-"):
-                existing = await frappe.get_call_log_by_provider_id(call_id)
-                if existing and existing.get("name"):
-                    target_name = existing.get("name")
+    raise HTTPException(status_code=404, detail="Intelligence not found for this call")
 
-            intelligence = await frappe._fetch_and_parse_intelligence(target_name, client)
-            if not intelligence:
-                raise HTTPException(status_code=404, detail="Intelligence not found for this call")
-            return intelligence
-    else:
-        raise HTTPException(status_code=404, detail="Intelligence not found for this call")
+
+@app.get(
+    "/api/v1/dashboard/calls/{call_id}/recording",
+    tags=["Analytics"],
+)
+async def get_call_recording(call_id: str):
+    """Retrieve a short-lived signed URL for a specific call recording."""
+    pipeline = get_pipeline()
+    cached = pipeline.idempotency_store.get(call_id)
+    if not cached or not cached.recording_storage_path:
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    from src.config import get_supabase_client
+    from fastapi.responses import RedirectResponse
+    
+    client = get_supabase_client()
+    if not client:
+        raise HTTPException(status_code=500, detail="Storage not configured")
+        
+    try:
+        # Generate 1-hour signed URL (3600 seconds)
+        res = client.storage.from_("recordings").create_signed_url(cached.recording_storage_path, 3600)
+        url = res.get("signedURL")
+        if not url:
+            raise ValueError("Could not generate signed URL")
+        return RedirectResponse(url)
+    except Exception as exc:
+        logger.error(f"Error generating signed URL for {call_id}: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve recording url")
 
 
 

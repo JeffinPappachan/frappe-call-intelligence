@@ -137,6 +137,7 @@ class PipelineResponse(BaseModel):
     direction: CallDirection | None = None
     event_timestamp: datetime | None = None
     agent_id: str | None = None
+    recording_storage_path: str | None = None
 
 
 class DashboardMetricsResponse(BaseModel):

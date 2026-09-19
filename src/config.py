@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     admin_api_token: str = ""
 
     # Reliability & Idempotency Store
-    idempotency_backend: Literal["memory", "sqlite"] = "memory"
+    idempotency_backend: Literal["memory", "sqlite", "supabase"] = "memory"
     sqlite_db_path: str = "idempotency.db"
     idempotency_ttl_seconds: int = 86400  # 24 hours
     idempotency_max_items: int = 1000
@@ -63,8 +63,20 @@ class Settings(BaseSettings):
     ai_timeout_seconds: float = 45.0
     frappe_timeout_seconds: float = 15.0
 
+    # Supabase Configuration
+    supabase_url: str = ""
+    supabase_service_key: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:
     """Returns a cached singleton instance of Settings."""
     return Settings()
+
+@lru_cache
+def get_supabase_client():
+    from supabase import create_client, Client
+    settings = get_settings()
+    if not settings.supabase_url or not settings.supabase_service_key:
+        return None
+    return create_client(settings.supabase_url, settings.supabase_service_key)

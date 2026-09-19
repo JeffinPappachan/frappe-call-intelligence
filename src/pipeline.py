@@ -35,7 +35,7 @@ class IdempotencyStore(ABC):
         pass
 
     @abstractmethod
-    def get_all(self) -> list[PipelineResponse]:
+    def get_all(self, limit: int = 50) -> list[PipelineResponse]:
         pass
 
     @abstractmethod
@@ -101,10 +101,10 @@ class InMemoryIdempotencyStore(IdempotencyStore):
             self._cache[key] = (value, expiry)
             self._cache.move_to_end(key)
 
-    def get_all(self) -> list[PipelineResponse]:
+    def get_all(self, limit: int = 50) -> list[PipelineResponse]:
         with self._lock:
             self._purge_expired()
-            return [resp for resp, _ in self._cache.values()]
+            return [resp for resp, _ in self._cache.values()][:limit]
 
     def clear(self) -> None:
         with self._lock:
@@ -202,10 +202,10 @@ class SQLiteIdempotencyStore(IdempotencyStore):
             )
             conn.commit()
 
-    def get_all(self) -> list[PipelineResponse]:
+    def get_all(self, limit: int = 50) -> list[PipelineResponse]:
         with self._lock, self._get_conn() as conn:
             self._purge_expired(conn)
-            cur = conn.execute("SELECT payload FROM idempotency_cache ORDER BY created_at DESC")
+            cur = conn.execute("SELECT payload FROM idempotency_cache ORDER BY created_at DESC LIMIT ?", (limit,))
             results = []
             for row in cur.fetchall():
                 try:
@@ -244,6 +244,9 @@ class CallIntelligencePipeline:
 
         if idempotency_store:
             self.idempotency_store = idempotency_store
+        elif settings.idempotency_backend == "supabase":
+            from src.supabase_store import SupabaseIdempotencyStore
+            self.idempotency_store = SupabaseIdempotencyStore()
         elif settings.idempotency_backend == "sqlite":
             self.idempotency_store = SQLiteIdempotencyStore(
                 db_path=settings.sqlite_db_path,
@@ -256,7 +259,7 @@ class CallIntelligencePipeline:
                 max_items=settings.idempotency_max_items,
             )
 
-        if settings.mock_mode and len(self.idempotency_store.get_all()) == 0:
+        if settings.mock_mode and settings.idempotency_backend != "supabase" and len(self.idempotency_store.get_all()) == 0:
             self._seed_mock_data()
 
     def _seed_mock_data(self):
@@ -491,6 +494,17 @@ class CallIntelligencePipeline:
         duration_ms = round((time.time() - start_time) * 1000, 2)
         metrics.record_duration(duration_ms)
         metrics.increment("pipeline_success_total")
+        
+        recording_storage_path = None
+        from src.config import get_settings
+        if get_settings().idempotency_backend == "supabase":
+            from src.supabase_store import upload_audio_to_supabase
+            recording_storage_path = upload_audio_to_supabase(
+                call_id=call_id, 
+                raw_audio=raw_audio, 
+                recording_url=event.recording_url, 
+                filename=audio_filename
+            )
 
         response = PipelineResponse(
             success=True,
@@ -506,6 +520,7 @@ class CallIntelligencePipeline:
             direction=event.direction,
             event_timestamp=event.event_timestamp or datetime.now(),
             agent_id=event.agent_id,
+            recording_storage_path=recording_storage_path,
         )
 
         self.idempotency_store.set(call_id, response)

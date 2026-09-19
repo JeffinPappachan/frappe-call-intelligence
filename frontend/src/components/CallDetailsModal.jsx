@@ -81,6 +81,17 @@ const CallDetailsModal = ({ call, onClose }) => {
                 </p>
               </div>
 
+              <div style={{ marginBottom: '1.5rem' }}>
+                <h3 style={{ fontSize: '1rem', marginBottom: '0.5rem', color: '#fff' }}>Audio Recording</h3>
+                <audio 
+                  controls 
+                  src={`${API_BASE_URL}/api/v1/dashboard/calls/${encodeURIComponent(call.provider_call_id || call.frappe_call_log_id)}/recording`}
+                  style={{ width: '100%', height: '40px', outline: 'none' }}
+                >
+                  Your browser does not support the audio element.
+                </audio>
+              </div>
+
               <div>
                 <h3 style={{ fontSize: '1rem', marginBottom: '0.5rem', color: '#fff' }}>Audio Transcript</h3>
                 <div className="transcript-box">
