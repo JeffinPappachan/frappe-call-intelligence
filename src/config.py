@@ -75,7 +75,7 @@ def get_settings() -> Settings:
 
 @lru_cache
 def get_supabase_client():
-    from supabase import create_client, Client
+    from supabase import create_client
     settings = get_settings()
     if not settings.supabase_url or not settings.supabase_service_key:
         return None

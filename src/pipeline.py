@@ -337,27 +337,38 @@ class CallIntelligencePipeline:
     def accept_call(self, event: TelephonyWebhookPayload) -> PipelineResponse:
         """Synchronously accept a call webhook, performing idempotency checks and saving initial state."""
         from src.schemas import ProcessingStatus
-        
+
         call_id = event.provider_call_id
         if self.idempotency_store.has(call_id):
             cached = self.idempotency_store.get(call_id)
             if cached:
-                replay = cached.model_copy()
-                replay.idempotent_replay = True
-                replay.message = "Call accepted (from idempotency cache)"
-                return replay
-                
+                if cached.processing_status == ProcessingStatus.FAILED:
+                    logger.info(f"Retrying previously failed call {call_id}")
+                    # Allow retry: we will return idempotent_replay=False
+                    # The background task will skip completed steps.
+                    response = cached.model_copy()
+                    response.processing_status = ProcessingStatus.RECEIVED
+                    response.error_message = None
+                    response.idempotent_replay = False
+                    self.idempotency_store.set(call_id, response)
+                    return response
+                else:
+                    replay = cached.model_copy()
+                    replay.idempotent_replay = True
+                    replay.message = "Call accepted (from idempotency cache)"
+                    return replay
+
         # Initialize new call state
         response = PipelineResponse(
             success=True,
             provider_call_id=call_id,
-            idempotent_replay=False,
-            processing_status=ProcessingStatus.RECEIVED,
-            message="Call accepted for processing",
-            duration_seconds=event.duration_seconds,
             direction=event.direction,
+            duration_seconds=event.duration_seconds,
             event_timestamp=event.event_timestamp or datetime.now(),
             agent_id=event.agent_id,
+            processing_status=ProcessingStatus.RECEIVED,
+            message="Call accepted",
+            event_payload=event.model_dump(mode="json"),
         )
         self.idempotency_store.set(call_id, response)
         return response
@@ -371,24 +382,50 @@ class CallIntelligencePipeline:
         """Helper for tests and backwards compatibility to run the full pipeline synchronously."""
         from src.observability import AppError, ErrorClassification
         from src.schemas import ProcessingStatus
-        
+
         res = self.accept_call(event)
         if res.idempotent_replay:
             return res
-            
+
         await self.process_call_background(event, raw_audio, audio_filename)
         final_res = self.idempotency_store.get(event.provider_call_id)
-        
+
         if final_res and final_res.processing_status == ProcessingStatus.FAILED:
-            if "STT transcription failed" in str(final_res.error_message):
-                raise AppError(message=final_res.error_message, error_class=ErrorClassification.STT_ERROR, status_code=502)
-            if "LLM extraction failed" in str(final_res.error_message):
-                raise AppError(message=final_res.error_message.replace("LLM extraction failed", "LLM analysis failed"), error_class=ErrorClassification.LLM_ERROR, status_code=502)
-            if "CRM Call Log creation failed" in str(final_res.error_message):
-                raise AppError(message=final_res.error_message, error_class=ErrorClassification.CRM_ERROR, status_code=502)
-            raise AppError(message=final_res.error_message or "Unknown failure", error_class=ErrorClassification.UNKNOWN_ERROR, status_code=500)
-            
+            error_msg = final_res.error_message or "Unknown failure"
+            if "STT transcription failed" in error_msg:
+                raise AppError(message=error_msg, error_class=ErrorClassification.STT_ERROR, status_code=502)
+            if "LLM extraction failed" in error_msg:
+                raise AppError(message=error_msg.replace("LLM extraction failed", "LLM analysis failed"), error_class=ErrorClassification.LLM_ERROR, status_code=502)
+            if "CRM Call Log creation failed" in error_msg:
+                raise AppError(message=error_msg, error_class=ErrorClassification.CRM_ERROR, status_code=502)
+            raise AppError(message=error_msg, error_class=ErrorClassification.UNEXPECTED_ERROR, status_code=500)
+
+        assert final_res is not None
         return final_res
+
+    def _handle_background_failure(self, call_id: str, cached, exc: Exception, step_name: str) -> None:
+        from datetime import datetime, timedelta
+        from src.schemas import ProcessingStatus
+        import logging
+        logger = logging.getLogger('CallIntelligencePipeline')
+        
+        error_msg = f"{step_name} failed: {exc}"
+        cached.success = False
+        cached.error_message = error_msg
+        
+        from src.config import get_settings
+        max_retries = 3 if get_settings().idempotency_backend == "supabase" else 0
+        if cached.retry_count < max_retries:
+            cached.retry_count += 1
+            cached.processing_status = ProcessingStatus.RECEIVED
+            delay_minutes = 1 if cached.retry_count == 1 else (5 if cached.retry_count == 2 else 15)
+            cached.next_retry_at = datetime.now() + timedelta(minutes=delay_minutes)
+            logger.warning(f"[{call_id}] {error_msg}. Will retry {cached.retry_count}/{max_retries} at {cached.next_retry_at}")
+        else:
+            cached.processing_status = ProcessingStatus.FAILED
+            logger.error(f"[{call_id}] {error_msg}. Max retries exceeded.")
+            
+        self.idempotency_store.set(call_id, cached)
 
     async def process_call_background(
         self,
@@ -398,199 +435,218 @@ class CallIntelligencePipeline:
     ) -> None:
         """Process a call event asynchronously in the background."""
         from src.observability import (
-            AppError,
-            ErrorClassification,
             metrics,
             request_id_ctx,
         )
         from src.schemas import ProcessingStatus
-        
+
         start_time = time.time()
         call_id = event.provider_call_id
         req_id = request_id_ctx.get("-")
-        
+
         cached = self.idempotency_store.get(call_id)
         if not cached:
             logger.error(f"Cannot process call {call_id}: not found in idempotency store.")
             return
 
-        # Double check it isn't already processed
-        if cached.processing_status in [ProcessingStatus.COMPLETED, ProcessingStatus.FAILED]:
+        # Double check it isn't already processed or processing (Concurrency protection)
+        if cached.processing_status in [ProcessingStatus.PROCESSING, ProcessingStatus.COMPLETED]:
             logger.info(f"Skipping background processing for {call_id}: status is {cached.processing_status}")
             return
 
         # Update state to PROCESSING
         cached.processing_status = ProcessingStatus.PROCESSING
         self.idempotency_store.set(call_id, cached)
-        
-        # 2. Speech-to-Text Transcription
-        stt_status = "pending"
+
         try:
-            audio_source = raw_audio or event.recording_url or "mock_call.wav"
-            stt_meta = {
-                "call_id": call_id,
-                "audio_filename": audio_filename,
-                "telephony_provider": event.telephony_provider,
-            }
-            transcript = await self.stt_service.transcribe(
-                audio_source=audio_source,
-                filename=audio_filename,
-                metadata=stt_meta,
-            )
-            if not transcript or not transcript.strip():
-                raise ValueError("Transcription result is empty.")
-            stt_status = "success"
-            cached.transcript = transcript
-        except Exception as exc:
-            stt_status = "failed"
-            metrics.increment("stt_failures_total")
-            metrics.record_error("stt_error")
-            logger.error(
-                f"STT transcription failed for call '{call_id}': {exc}",
-                extra={"call_id": call_id, "request_id": req_id, "error_class": "stt_error"},
-            )
-            cached.processing_status = ProcessingStatus.FAILED
-            cached.success = False
-            cached.error_message = f"STT transcription failed: {exc}"
-            self.idempotency_store.set(call_id, cached)
-            return
+            # 2. Speech-to-Text Transcription
+            stt_status = "skipped"
+            if not cached.transcript:
+                stt_status = "pending"
+                try:
+                    audio_source = raw_audio or event.recording_url or "mock_call.wav"
+                    stt_meta = {
+                        "call_id": call_id,
+                        "audio_filename": audio_filename,
+                        "telephony_provider": event.telephony_provider,
+                    }
+                    transcript = await self.stt_service.transcribe(
+                        audio_source=audio_source,
+                        filename=audio_filename,
+                        metadata=stt_meta,
+                    )
+                    if not transcript or not transcript.strip():
+                        raise ValueError("Transcription result is empty.")
+                    stt_status = "success"
+                    cached.transcript = transcript
+                except Exception as exc:
+                    stt_status = "failed"
+                    metrics.increment("stt_failures_total")
+                    metrics.record_error("stt_error")
+                    logger.error(
+                        f"STT transcription failed for call '{call_id}': {exc}",
+                        extra={"call_id": call_id, "request_id": req_id, "error_class": "stt_error"},
+                    )
+                    self._handle_background_failure(call_id, cached, exc, "STT transcription")
+                    return
+            else:
+                transcript = cached.transcript
 
-        # 3. LLM Structured Intelligence Analysis
-        llm_status = "pending"
-        try:
-            ai_meta = {
-                "call_id": call_id,
-                "provider": event.telephony_provider,
-                "event_timestamp": event.event_timestamp.isoformat() if event.event_timestamp else datetime.now().isoformat(),
-            }
-            intelligence = await self.ai_service.analyze_call(
-                transcript=transcript,
-                metadata=ai_meta,
-            )
-            llm_status = "success"
-            cached.intelligence = intelligence
-        except Exception as exc:
-            llm_status = "failed"
-            metrics.increment("llm_failures_total")
-            metrics.record_error("llm_error")
-            logger.error(
-                f"LLM extraction failed for call '{call_id}': {exc}",
-                extra={"call_id": call_id, "request_id": req_id, "error_class": "llm_error"},
-            )
-            cached.processing_status = ProcessingStatus.FAILED
-            cached.success = False
-            cached.error_message = f"LLM extraction failed: {exc}"
-            self.idempotency_store.set(call_id, cached)
-            return
+            # 3. LLM Structured Intelligence Analysis
+            llm_status = "skipped"
+            if not cached.intelligence:
+                llm_status = "pending"
+                try:
+                    ai_meta = {
+                        "call_id": call_id,
+                        "provider": event.telephony_provider,
+                        "event_timestamp": event.event_timestamp.isoformat() if event.event_timestamp else datetime.now().isoformat(),
+                    }
+                    intelligence = await self.ai_service.analyze_call(
+                        transcript=transcript,
+                        metadata=ai_meta,
+                    )
+                    llm_status = "success"
+                    cached.intelligence = intelligence
+                except Exception as exc:
+                    llm_status = "failed"
+                    metrics.increment("llm_failures_total")
+                    metrics.record_error("llm_error")
+                    logger.error(
+                        f"LLM extraction failed for call '{call_id}': {exc}",
+                        extra={"call_id": call_id, "request_id": req_id, "error_class": "llm_error"},
+                    )
+                    self._handle_background_failure(call_id, cached, exc, "LLM extraction")
+                    return
+            else:
+                intelligence = cached.intelligence
 
-        # 4. Match Lead in Frappe CRM
-        target_phone = event.to_number if event.direction == CallDirection.OUTBOUND else event.from_number
-        lead = await self.frappe_client.lookup_lead_by_phone(target_phone)
-        lead_id = lead.get("name") if lead else None
-        lead_agent = lead.get("assigned_to") if lead else event.agent_id
-        
-        if lead:
-            cached.matched_lead = f"{lead.get('lead_name')} ({lead_id})"
+            # 4. Match Lead in Frappe CRM
+            target_phone = event.to_number if event.direction == CallDirection.OUTBOUND else event.from_number
+            lead_id = None
+            lead_agent = event.agent_id
 
-        # 5. Create Frappe CRM Call Log
-        crm_status = "pending"
-        try:
-            call_log = await self.frappe_client.create_call_log(
-                call_event=event,
-                transcript=transcript,
-                intelligence=intelligence,
-                lead_id=lead_id,
-            )
-            call_log_id = call_log.get("name", "CALL-LOG-UNKNOWN")
-            crm_status = "success"
-            cached.frappe_call_log_id = call_log_id
-        except Exception as exc:
-            crm_status = "failed"
-            metrics.increment("crm_failures_total")
-            metrics.record_error("crm_error")
-            logger.error(
-                f"CRM Call Log creation failed for call '{call_id}': {exc}",
-                extra={"call_id": call_id, "lead_id": lead_id, "request_id": req_id, "error_class": "crm_error"},
-            )
-            cached.processing_status = ProcessingStatus.FAILED
-            cached.success = False
-            cached.error_message = f"CRM Call Log creation failed: {exc}"
-            self.idempotency_store.set(call_id, cached)
-            return
+            if not cached.matched_lead:
+                lead = await self.frappe_client.lookup_lead_by_phone(target_phone)
+                lead_id = lead.get("name") if lead else None
+                lead_agent = lead.get("assigned_to") if lead else event.agent_id
 
-        # 6. Auto-create Follow-up Task in Frappe CRM if requested
-        task_id = None
-        task_status = "skipped"
-        if intelligence.follow_up_required:
-            try:
-                task = await self.frappe_client.create_followup_task(
-                    call_log_id=call_log_id,
-                    lead_id=lead_id,
-                    intelligence=intelligence,
-                    assigned_to=lead_agent,
-                )
-                if task and task.get("name") is not None:
-                    task_id = str(task.get("name"))
-                    task_status = "success"
-                    cached.frappe_task_id = task_id
-                else:
+                if lead:
+                    cached.matched_lead = f"{lead.get('lead_name')} ({lead_id})"
+            else:
+                # Extract lead ID from cached string like "John Doe (CRM-LEAD-123)"
+                import re
+                match = re.search(r"\((CRM-LEAD-[\w-]+)\)", cached.matched_lead)
+                if match:
+                    lead_id = match.group(1)
+
+            # 5. Create Frappe CRM Call Log
+            crm_status = "skipped"
+            call_log_id = cached.frappe_call_log_id
+            if not call_log_id:
+                crm_status = "pending"
+                try:
+                    call_log = await self.frappe_client.create_call_log(
+                        call_event=event,
+                        transcript=transcript,
+                        intelligence=intelligence,
+                        lead_id=lead_id,
+                    )
+                    call_log_id = call_log.get("name", "CALL-LOG-UNKNOWN")
+                    crm_status = "success"
+                    cached.frappe_call_log_id = call_log_id
+                except Exception as exc:
+                    crm_status = "failed"
+                    metrics.increment("crm_failures_total")
+                    metrics.record_error("crm_error")
+                    logger.error(
+                        f"CRM Call Log creation failed for call '{call_id}': {exc}",
+                        extra={"call_id": call_id, "lead_id": lead_id, "request_id": req_id, "error_class": "crm_error"},
+                    )
+                    self._handle_background_failure(call_id, cached, exc, "CRM Call Log creation")
+                    return
+
+            # 6. Auto-create Follow-up Task in Frappe CRM if requested
+            task_id = cached.frappe_task_id
+            task_status = "skipped"
+            if not task_id and intelligence.follow_up_required:
+                try:
+                    task = await self.frappe_client.create_followup_task(
+                        call_log_id=call_log_id,
+                        lead_id=lead_id,
+                        intelligence=intelligence,
+                        assigned_to=lead_agent,
+                    )
+                    if task and task.get("name") is not None:
+                        task_id = str(task.get("name"))
+                        task_status = "success"
+                        cached.frappe_task_id = task_id
+                    else:
+                        task_status = "failed"
+                        metrics.increment("followup_task_failures_total")
+                except Exception as exc:
                     task_status = "failed"
                     metrics.increment("followup_task_failures_total")
-            except Exception as exc:
-                task_status = "failed"
-                metrics.increment("followup_task_failures_total")
-                logger.error(
-                    f"Unexpected error during task creation for call '{call_id}': {exc}",
-                    extra={"call_id": call_id, "lead_id": lead_id, "request_id": req_id},
-                )
-                task_id = None
+                    logger.error(
+                        f"Unexpected error during task creation for call '{call_id}': {exc}",
+                        extra={"call_id": call_id, "lead_id": lead_id, "request_id": req_id},
+                    )
+                    task_id = None
 
-        # 7. Update Lead stage & quality
-        if lead_id:
-            try:
-                await self.frappe_client.update_lead_status(lead_id=lead_id, intelligence=intelligence)
-            except Exception as exc:
-                logger.warning(
-                    f"Non-fatal error updating Lead stage for '{lead_id}': {exc}",
-                    extra={"call_id": call_id, "lead_id": lead_id, "request_id": req_id},
-                )
+            # 7. Update Lead stage & quality
+            if lead_id:
+                try:
+                    await self.frappe_client.update_lead_status(lead_id=lead_id, intelligence=intelligence)
+                except Exception as exc:
+                    logger.warning(
+                        f"Non-fatal error updating Lead stage for '{lead_id}': {exc}",
+                        extra={"call_id": call_id, "lead_id": lead_id, "request_id": req_id},
+                    )
 
-        # 8. Assemble response and save to Idempotency Store
-        duration_ms = round((time.time() - start_time) * 1000, 2)
-        metrics.record_duration(duration_ms)
-        metrics.increment("pipeline_success_total")
-        
-        recording_storage_path = None
-        from src.config import get_settings
-        if get_settings().idempotency_backend == "supabase":
-            from src.supabase_store import upload_audio_to_supabase
-            recording_storage_path = upload_audio_to_supabase(
-                call_id=call_id, 
-                raw_audio=raw_audio, 
-                recording_url=event.recording_url, 
-                filename=audio_filename
+            # 8. Assemble response and save to Idempotency Store
+            duration_ms = round((time.time() - start_time) * 1000, 2)
+            metrics.record_duration(duration_ms)
+            metrics.increment("pipeline_success_total")
+
+            from src.config import get_settings
+            if not cached.recording_storage_path and get_settings().idempotency_backend == "supabase":
+                from src.supabase_store import upload_audio_to_supabase
+                recording_storage_path = upload_audio_to_supabase(
+                    call_id=call_id,
+                    raw_audio=raw_audio,
+                    recording_url=event.recording_url,
+                    filename=audio_filename
+                )
+                cached.recording_storage_path = recording_storage_path
+
+            cached.processing_status = ProcessingStatus.COMPLETED
+            cached.message = "Call processed, analyzed, and synchronized with Frappe CRM"
+            self.idempotency_store.set(call_id, cached)
+
+            logger.info(
+                f"Successfully processed call '{call_id}' in {duration_ms}ms",
+                extra={
+                    "call_id": call_id,
+                    "lead_id": lead_id,
+                    "frappe_call_log_id": call_log_id,
+                    "frappe_task_id": task_id,
+                    "duration_ms": duration_ms,
+                    "stt_status": stt_status,
+                    "llm_status": llm_status,
+                    "crm_status": crm_status,
+                    "task_status": task_status,
+                    "pipeline_status": "success",
+                },
             )
-            cached.recording_storage_path = recording_storage_path
 
-        cached.processing_status = ProcessingStatus.COMPLETED
-        cached.message = "Call processed, analyzed, and synchronized with Frappe CRM"
-        self.idempotency_store.set(call_id, cached)
-
-        logger.info(
-            f"Successfully processed call '{call_id}' in {duration_ms}ms",
-            extra={
-                "call_id": call_id,
-                "lead_id": lead_id,
-                "frappe_call_log_id": call_log_id,
-                "frappe_task_id": task_id,
-                "duration_ms": duration_ms,
-                "stt_status": stt_status,
-                "llm_status": llm_status,
-                "crm_status": crm_status,
-                "task_status": task_status,
-                "pipeline_status": "success",
-            },
-        )
+        except Exception as global_exc:
+            # Catch-all to prevent calls getting stuck in PROCESSING state forever
+            logger.error(
+                f"Global unexpected failure during background processing for '{call_id}': {global_exc}",
+                extra={"call_id": call_id, "request_id": req_id, "error_class": "unexpected_error"},
+                exc_info=True
+            )
+            self._handle_background_failure(call_id, cached, global_exc, "Unexpected")
 
 
 # Global pipeline singleton

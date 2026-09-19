@@ -1,7 +1,5 @@
 import logging
-import json
-from typing import Any
-from src.schemas import PipelineResponse, CallIntelligence, CallDirection, CallStatus
+from src.schemas import PipelineResponse, CallIntelligence, CallDirection
 from src.config import get_supabase_client
 from src.pipeline import IdempotencyStore
 from datetime import datetime
@@ -33,9 +31,9 @@ class SupabaseIdempotencyStore(IdempotencyStore):
             if not call_res.data:
                 return None
             call = call_res.data[0]
-            
+
             intel_res = self.client.table("call_intelligence").select("*").eq("call_id", call["id"]).execute()
-            
+
             intelligence = None
             if intel_res.data:
                 intel = intel_res.data[0]
@@ -93,7 +91,11 @@ class SupabaseIdempotencyStore(IdempotencyStore):
                 agent_id=call.get("agent_id"),
                 recording_storage_path=call.get("recording_storage_path"),
                 processing_status=processing_status_enum,
-                error_message=call.get("error_message")
+                error_message=call.get("error_message"),
+                worker_id=call.get("worker_id"),
+                retry_count=call.get("retry_count", 0),
+                next_retry_at=datetime.fromisoformat(call["next_retry_at"]) if call.get("next_retry_at") else None,
+                event_payload=call.get("event_payload")
             )
         except Exception as exc:
             logger.error(f"[SupabaseIdempotencyStore] get() failed for {key}: {exc}")
@@ -117,15 +119,19 @@ class SupabaseIdempotencyStore(IdempotencyStore):
                 "recording_storage_path": value.recording_storage_path,
                 "processing_status": value.processing_status.value if value.processing_status else "completed",
                 "error_message": value.error_message,
+                "worker_id": value.worker_id,
+                "retry_count": value.retry_count,
+                "next_retry_at": value.next_retry_at.isoformat() if value.next_retry_at else None,
+                "event_payload": value.event_payload,
             }
             # Instead of standard INSERT, handle potential conflicts if another worker just inserted
             call_res = self.client.table("calls").upsert(call_data, on_conflict="provider_call_id").execute()
             if not call_res.data:
                 logger.error(f"[SupabaseIdempotencyStore] Failed to insert call for {key}: {call_res}")
                 return
-                
+
             call_id = call_res.data[0]["id"]
-            
+
             if value.intelligence:
                 intel = value.intelligence
                 intel_data = {
@@ -157,11 +163,11 @@ class SupabaseIdempotencyStore(IdempotencyStore):
             res = self.client.table("calls").select("*, call_intelligence(*)").order("event_timestamp", desc=True).limit(limit).execute()
             if not res.data:
                 return []
-            
+
             results = []
             for call in res.data:
                 intel_list = call.get("call_intelligence", [])
-                
+
                 # In Supabase 1:1, it can be returned as dict or list depending on the schema relationship
                 if isinstance(intel_list, dict):
                     intel_data = intel_list
@@ -223,13 +229,36 @@ class SupabaseIdempotencyStore(IdempotencyStore):
                     agent_id=call.get("agent_id"),
                     recording_storage_path=call.get("recording_storage_path"),
                     processing_status=processing_status_enum,
-                    error_message=call.get("error_message")
+                    error_message=call.get("error_message"),
+                    worker_id=call.get("worker_id"),
+                    retry_count=call.get("retry_count", 0),
+                    next_retry_at=datetime.fromisoformat(call["next_retry_at"]) if call.get("next_retry_at") else None,
+                    event_payload=call.get("event_payload")
                 )
                 results.append(resp)
             return results
         except Exception as exc:
             logger.error(f"[SupabaseIdempotencyStore] get_all() failed: {exc}")
             return []
+
+    def claim_next_call(self, worker_id: str) -> PipelineResponse | None:
+        if not self.client:
+            return None
+        try:
+            res = self.client.rpc("claim_next_call", {"p_worker_id": worker_id}).execute()
+            if not res.data:
+                return None
+            
+            # The RPC returns a JSON object. We just extract provider_call_id and use get()
+            claimed_data = res.data
+            provider_call_id = claimed_data.get("provider_call_id")
+            if not provider_call_id:
+                return None
+                
+            return self.get(provider_call_id)
+        except Exception as exc:
+            logger.error(f"[SupabaseIdempotencyStore] claim_next_call() failed: {exc}")
+            return None
 
     def clear(self) -> None:
         pass
@@ -238,14 +267,14 @@ def upload_audio_to_supabase(call_id: str, raw_audio: bytes | None, recording_ur
     """Uploads audio bytes to Supabase storage or just returns the URL if it's already a URL."""
     from src.config import get_supabase_client
     import httpx
-    
+
     client = get_supabase_client()
     if not client:
         return None
-        
+
     audio_bytes = raw_audio
     name = filename or f"{call_id}.wav"
-    
+
     if not audio_bytes and recording_url:
         try:
             resp = httpx.get(recording_url, timeout=30.0)
@@ -257,16 +286,16 @@ def upload_audio_to_supabase(call_id: str, raw_audio: bytes | None, recording_ur
         except Exception as exc:
             logger.error(f"[Supabase Storage] Failed to download audio from {recording_url}: {exc}")
             return None
-            
+
     if not audio_bytes:
         return None
-        
+
     try:
         path = f"{call_id}/{name}"
         # Determine content type
         ext = name.split(".")[-1].lower() if "." in name else "wav"
         content_type = f"audio/{ext}" if ext in ["wav", "mp3", "m4a", "ogg", "webm", "flac"] else "audio/wav"
-        
+
         client.storage.from_("recordings").upload(
             file=audio_bytes,
             path=path,

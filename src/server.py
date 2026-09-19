@@ -23,7 +23,6 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.config import get_settings
-from src.frappe_client import get_frappe_client
 from src.observability import (
     AppError,
     metrics,
@@ -185,7 +184,7 @@ async def get_metrics():
     status_code=status.HTTP_200_OK,
     tags=["Telephony Webhook"],
 )
-async def telephony_webhook(payload: TelephonyWebhookPayload, background_tasks: BackgroundTasks):
+async def telephony_webhook(payload: TelephonyWebhookPayload):
     """Ingest telephony webhook event (Exotel / Twilio schema) and trigger the AI pipeline."""
     req_id = request_id_ctx.get("-")
     logger.info(
@@ -204,18 +203,8 @@ async def telephony_webhook(payload: TelephonyWebhookPayload, background_tasks: 
         pipeline = get_pipeline()
         # Accept call and persist initial state synchronously
         result = pipeline.accept_call(event=payload)
-        
-        # If it's an idempotent replay (already processed/processing), just return it
-        if result.idempotent_replay:
-            return result
-            
-        # Dispatch background processing
-        background_tasks.add_task(
-            pipeline.process_call_background,
-            event=payload,
-            raw_audio=None,
-            audio_filename=None,
-        )
+
+        # Dispatch background processing is now handled by external workers (Phase 5)
         return result
     except AppError as app_err:
         metrics.increment("pipeline_failed_total")
@@ -272,7 +261,6 @@ ALLOWED_AUDIO_MIME_TYPES = {
     tags=["Audio Processing"],
 )
 async def process_audio(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(..., description="Audio recording file (WAV, MP3, M4A)"),
     lead_phone: str = Form(..., description="Lead phone number for CRM linking"),
     agent_id: str | None = Form(default="jeffinpappachan110@gmail.com"),
@@ -377,19 +365,26 @@ async def process_audio(
         )
 
         pipeline = get_pipeline()
-        
+
         # Accept call and persist initial state synchronously
         result = pipeline.accept_call(event=event)
-        
-        # Enqueue background task
+
+        # Enqueue background task is handled by external workers (Phase 5)
         if not result.idempotent_replay:
-            background_tasks.add_task(
-                pipeline.process_call_background,
-                event=event,
-                raw_audio=audio_bytes,
-                audio_filename=filename,
-            )
-            
+            # For manual uploads, we MUST upload the audio to storage now so the worker can access it
+            from src.config import get_settings
+            if get_settings().idempotency_backend == "supabase":
+                from src.supabase_store import upload_audio_to_supabase
+                storage_path = upload_audio_to_supabase(
+                    call_id=call_id,
+                    raw_audio=audio_bytes,
+                    recording_url=None,
+                    filename=filename
+                )
+                if storage_path:
+                    result.recording_storage_path = storage_path
+                    pipeline.idempotency_store.set(call_id, result)
+
         return result
     except AppError as app_err:
         metrics.increment("pipeline_failed_total")
@@ -532,11 +527,11 @@ async def get_call_recording(call_id: str):
 
     from src.config import get_supabase_client
     from fastapi.responses import RedirectResponse
-    
+
     client = get_supabase_client()
     if not client:
         raise HTTPException(status_code=500, detail="Storage not configured")
-        
+
     try:
         # Generate 1-hour signed URL (3600 seconds)
         res = client.storage.from_("recordings").create_signed_url(cached.recording_storage_path, 3600)

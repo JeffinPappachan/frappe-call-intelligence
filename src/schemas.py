@@ -145,10 +145,16 @@ class PipelineResponse(BaseModel):
     event_timestamp: datetime | None = None
     agent_id: str | None = None
     recording_storage_path: str | None = None
-    
+
     # State tracking
     processing_status: ProcessingStatus = Field(default=ProcessingStatus.COMPLETED)
     error_message: str | None = None
+    
+    # Job queue tracking (Phase 5)
+    worker_id: str | None = None
+    retry_count: int = Field(default=0)
+    next_retry_at: datetime | None = None
+    event_payload: dict | None = None
 
 
 class DashboardMetricsResponse(BaseModel):

@@ -539,13 +539,13 @@ class FrappeCRMClient:
                             except Exception:
                                 dt = datetime.now()
 
-                        intel_data = await self._fetch_and_parse_intelligence_and_transcript(row.get("name"), client)
+                        intel_data = await self._fetch_and_parse_intelligence_and_transcript(str(row.get("name")), client)
                         intel = intel_data.get("intelligence") if intel_data else None
                         extracted_transcript = intel_data.get("transcript") if intel_data else None
 
                         return PipelineResponse(
                             success=(row.get("status") == "Completed"),
-                            provider_call_id=row.get("id") or row.get("name"),
+                            provider_call_id=str(row.get("id") or row.get("name") or "unknown"),
                             idempotent_replay=False,
                             frappe_call_log_id=row.get("name"),
                             duration_seconds=int(row.get("duration") or 0),

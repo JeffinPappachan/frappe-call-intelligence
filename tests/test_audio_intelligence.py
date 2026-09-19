@@ -2,23 +2,20 @@
 and isolated LLM call intelligence (Task A requirements).
 """
 
-from datetime import datetime, timedelta
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 from src.observability import AppError
 from src.pipeline import CallIntelligencePipeline, InMemoryIdempotencyStore
 from src.schemas import (
-    CallDirection,
     CallIntelligence,
     CallOutcome,
-    CallStatus,
     LeadQuality,
     PrimaryObjection,
     TelephonyWebhookPayload,
 )
-from src.stt_service import MockSTTService, RealSTTService, get_stt_service
-from src.ai_service import MockAIService, RealAIService, get_ai_service
+from src.stt_service import MockSTTService, get_stt_service
+from src.ai_service import MockAIService, get_ai_service
 
 
 COURSE_FEES_TRANSCRIPT = (
