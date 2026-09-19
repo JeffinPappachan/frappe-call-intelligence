@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     admin_api_token: str = ""
 
     # Reliability & Idempotency Store
-    idempotency_backend: Literal["memory", "sqlite", "supabase"] = "memory"
+    idempotency_backend: Literal["memory", "sqlite", "supabase"] = "supabase"
     sqlite_db_path: str = "idempotency.db"
     idempotency_ttl_seconds: int = 86400  # 24 hours
     idempotency_max_items: int = 1000
@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     frappe_timeout_seconds: float = 15.0
 
     # Supabase Configuration
-    supabase_url: str = ""
+    supabase_url: str = "https://lwxwnitinlddzfyegyyd.supabase.co"
     supabase_service_key: str = ""
 
 

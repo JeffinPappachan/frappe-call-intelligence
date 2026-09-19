@@ -7,7 +7,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     MOCK_MODE=false \
     AI_PROVIDER=groq \
     STT_PROVIDER=groq \
-    FRAPPE_BASE_URL=https://crm-chm-lly.nvi.frappe.cloud
+    FRAPPE_BASE_URL=https://crm-chm-lly.nvi.frappe.cloud \
+    IDEMPOTENCY_BACKEND=supabase \
+    SUPABASE_URL=https://lwxwnitinlddzfyegyyd.supabase.co
 
 WORKDIR /app
 

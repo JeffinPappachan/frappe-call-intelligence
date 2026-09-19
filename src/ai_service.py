@@ -146,57 +146,77 @@ class RealAIService(AIService):
         }
 
         timeout = get_settings().ai_timeout_seconds
+        last_exc = None
+        content = None
+        for attempt in range(4):
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(url, headers=headers, json=data)
+                    if response.status_code == 429 and attempt < 3:
+                        wait_seconds = 2 ** (attempt + 1)
+                        logger.warning(f"[RealAIService] Rate limit 429 received from Groq. Retrying in {wait_seconds}s (attempt {attempt + 1}/3)...")
+                        import asyncio
+                        await asyncio.sleep(wait_seconds)
+                        continue
+                    response.raise_for_status()
+
+                    content = response.json()["choices"][0]["message"]["content"]
+                    break
+            except Exception as exc:
+                last_exc = exc
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429 and attempt < 3:
+                    wait_seconds = 2 ** (attempt + 1)
+                    logger.warning(f"[RealAIService] HTTPStatusError 429 received. Retrying in {wait_seconds}s...")
+                    import asyncio
+                    await asyncio.sleep(wait_seconds)
+                    continue
+                logger.error(f"[RealAIService] Analysis attempt failed: {exc}")
+                raise
+        else:
+            raise last_exc or ValueError("Failed to get response from AI service after retries")
+
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(url, headers=headers, json=data)
-                response.raise_for_status()
+            parsed = json.loads(content)
+            if not isinstance(parsed, dict):
+                raise ValueError(f"Invalid LLM response format: {content}")
 
-                content = response.json()["choices"][0]["message"]["content"]
-                parsed = json.loads(content)
-                if not isinstance(parsed, dict):
-                    raise ValueError(f"Invalid LLM response format: {content}")
+            # Normalize missing or null fields
+            if not parsed.get("next_action"):
+                parsed["next_action"] = parsed.get("recommended_action") or "No further action required"
+            if not parsed.get("recommended_action"):
+                parsed["recommended_action"] = parsed.get("next_action") or "No further action required"
+            if not parsed.get("agent_quality_notes"):
+                parsed["agent_quality_notes"] = "Good call adherence and clear communication."
+            if not parsed.get("customer_intent"):
+                parsed["customer_intent"] = "Customer inquiry"
+            if not parsed.get("call_summary"):
+                parsed["call_summary"] = "Call completed."
 
-                # Normalize missing or null fields
-                if not parsed.get("next_action"):
-                    parsed["next_action"] = parsed.get("recommended_action") or "No further action required"
-                if not parsed.get("recommended_action"):
-                    parsed["recommended_action"] = parsed.get("next_action") or "No further action required"
-                if not parsed.get("agent_quality_notes"):
-                    parsed["agent_quality_notes"] = "Good call adherence and clear communication."
-                if not parsed.get("customer_intent"):
-                    parsed["customer_intent"] = "Customer inquiry"
-                if not parsed.get("call_summary"):
-                    parsed["call_summary"] = "Call completed."
+            # Normalize enum string casing if necessary
+            if "call_outcome" in parsed and isinstance(parsed["call_outcome"], str):
+                co = parsed["call_outcome"].strip().title()
+                if co in ["Follow-Up", "Followup", "Follow_Up"]:
+                    co = "Follow-up"
+                elif co in ["No-Response", "No_Response"]:
+                    co = "No Response"
+                elif co in ["No-Answer", "No_Answer"]:
+                    co = "No Answer"
+                elif co in ["Not-Interested", "Not_Interested"]:
+                    co = "Not Interested"
+                parsed["call_outcome"] = co
 
-                # Normalize enum string casing if necessary
-                if "call_outcome" in parsed and isinstance(parsed["call_outcome"], str):
-                    co = parsed["call_outcome"].strip().title()
-                    if co in ["Follow-Up", "Followup", "Follow_Up"]:
-                        co = "Follow-up"
-                    elif co in ["No-Response", "No_Response"]:
-                        co = "No Response"
-                    elif co in ["No-Answer", "No_Answer"]:
-                        co = "No Answer"
-                    elif co in ["Not-Interested", "Not_Interested"]:
-                        co = "Not Interested"
-                    parsed["call_outcome"] = co
+            if "lead_quality" in parsed and isinstance(parsed["lead_quality"], str):
+                parsed["lead_quality"] = parsed["lead_quality"].strip().title()
 
-                if "lead_quality" in parsed and isinstance(parsed["lead_quality"], str):
-                    parsed["lead_quality"] = parsed["lead_quality"].strip().title()
+            if "primary_objection" in parsed and isinstance(parsed["primary_objection"], str):
+                po = parsed["primary_objection"].strip().title()
+                if po in ["No-Need", "No_Need", "Noneed"]:
+                    po = "No need"
+                parsed["primary_objection"] = po
 
-                if "primary_objection" in parsed and isinstance(parsed["primary_objection"], str):
-                    po = parsed["primary_objection"].strip().title()
-                    if po in ["No-Need", "No_Need", "Noneed"]:
-                        po = "No need"
-                    parsed["primary_objection"] = po
-
-                return CallIntelligence.model_validate(parsed)
-
-        except httpx.HTTPStatusError as exc:
-            logger.error(f"[RealAIService] HTTP Error: {exc.response.text}")
-            raise ValueError(f"AI API Error: {exc.response.text}") from exc
+            return CallIntelligence.model_validate(parsed)
         except Exception as exc:
-            logger.error(f"[RealAIService] Analysis failed: {exc}")
+            logger.error(f"[RealAIService] Parsing failed: {exc}")
             raise
 
 

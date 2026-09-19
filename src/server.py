@@ -631,11 +631,16 @@ async def get_dashboard_calls(background_tasks: BackgroundTasks):
     """Get recent calls feed for the dashboard."""
     calls = get_pipeline().idempotency_store.get_all(limit=50)
 
-    # Background heal any calls that still have mock data
+    # Background heal any calls that still have mock data, are unanalyzed, failed, or missing CRM logs
     for c in calls:
-        if (c.transcript and "are you interested in our course" in c.transcript.lower()) or (
-            c.intelligence and "course fee" in c.intelligence.call_summary.lower()
-        ):
+        needs_heal = (
+            (c.transcript and "are you interested in our course" in c.transcript.lower())
+            or (c.intelligence and "course fee" in c.intelligence.call_summary.lower())
+            or c.intelligence is None
+            or c.processing_status != ProcessingStatus.COMPLETED
+            or not c.frappe_call_log_id
+        )
+        if needs_heal:
             background_tasks.add_task(auto_heal_call, c)
 
     # Sort by timestamp descending
@@ -647,81 +652,127 @@ async def get_dashboard_calls(background_tasks: BackgroundTasks):
 
 
 async def auto_heal_call(cached: PipelineResponse) -> PipelineResponse:
-    """If a call has hardcoded mock transcript or intelligence from an earlier mock run,
-    re-run real speech-to-text (Groq Whisper) and AI intelligence (Groq LLaMA) using the audio recording.
+    """If a call has hardcoded mock data, failed STT/AI, or missing Frappe CRM / Supabase sync,
+    re-run real speech-to-text, AI intelligence, and sync with Frappe CRM.
     """
     if not cached:
         return cached
 
     has_mock_transcript = bool(cached.transcript and "are you interested in our course" in cached.transcript.lower())
     has_mock_intel = bool(cached.intelligence and "course fee" in cached.intelligence.call_summary.lower())
+    missing_intel = cached.intelligence is None
+    is_failed = cached.processing_status == ProcessingStatus.FAILED
+    missing_crm = not cached.frappe_call_log_id
 
-    if not (has_mock_transcript or has_mock_intel):
+    # If completely analyzed and synchronized, nothing to heal
+    if not (has_mock_transcript or has_mock_intel or missing_intel or is_failed or missing_crm):
         return cached
 
-    logger.info(f"Auto-healing mock data for call '{cached.provider_call_id}' using real STT and AI...")
     pipeline = get_pipeline()
-    audio_bytes = None
-    filename = "recording.mp3"
 
-    storage_path = cached.recording_storage_path
-    if storage_path:
-        filename = os.path.basename(storage_path)
-        if os.path.exists(storage_path):
-            try:
-                with open(storage_path, "rb") as f:
-                    audio_bytes = f.read()
-            except Exception as e:
-                logger.error(f"Failed to read audio from {storage_path}: {e}")
-        else:
-            alt_local = os.path.join(settings.audio_storage_dir, filename)
-            if os.path.exists(alt_local):
+    # 1. Re-run STT and AI if missing, mock, or failed
+    if has_mock_transcript or has_mock_intel or missing_intel or is_failed or not cached.transcript:
+        logger.info(f"Auto-healing STT and AI for call '{cached.provider_call_id}'...")
+        audio_bytes = None
+        filename = "recording.mp3"
+
+        storage_path = cached.recording_storage_path
+        if storage_path:
+            filename = os.path.basename(storage_path)
+            if os.path.exists(storage_path):
                 try:
-                    with open(alt_local, "rb") as f:
+                    with open(storage_path, "rb") as f:
                         audio_bytes = f.read()
                 except Exception as e:
-                    logger.error(f"Failed to read audio from {alt_local}: {e}")
-            elif settings.idempotency_backend == "supabase":
-                from src.supabase_store import download_audio_from_supabase
-                audio_bytes = download_audio_from_supabase(storage_path)
+                    logger.error(f"Failed to read audio from {storage_path}: {e}")
+            else:
+                alt_local = os.path.join(settings.audio_storage_dir, filename)
+                if os.path.exists(alt_local):
+                    try:
+                        with open(alt_local, "rb") as f:
+                            audio_bytes = f.read()
+                    except Exception as e:
+                        logger.error(f"Failed to read audio from {alt_local}: {e}")
+                elif settings.idempotency_backend == "supabase":
+                    from src.supabase_store import download_audio_from_supabase
+                    audio_bytes = download_audio_from_supabase(storage_path)
 
-    if not audio_bytes:
-        logger.warning(f"Could not auto-heal call '{cached.provider_call_id}': audio file not found.")
-        return cached
+        if audio_bytes:
+            try:
+                # Transcribe with real Groq Whisper
+                stt_meta = {
+                    "call_id": cached.provider_call_id,
+                    "audio_filename": filename,
+                }
+                real_transcript = await pipeline.stt_service.transcribe(
+                    audio_source=audio_bytes,
+                    filename=filename,
+                    metadata=stt_meta,
+                )
+                if real_transcript and real_transcript.strip():
+                    cached.transcript = real_transcript
 
-    try:
-        # Transcribe with real Groq Whisper
-        stt_meta = {
-            "call_id": cached.provider_call_id,
-            "audio_filename": filename,
-        }
-        real_transcript = await pipeline.stt_service.transcribe(
-            audio_source=audio_bytes,
-            filename=filename,
-            metadata=stt_meta,
-        )
-        if real_transcript and real_transcript.strip():
-            cached.transcript = real_transcript
+                    # Analyze with real Groq AI
+                    ai_meta = {
+                        "call_id": cached.provider_call_id,
+                        "event_timestamp": cached.event_timestamp.isoformat() if cached.event_timestamp else None,
+                    }
+                    real_intel = await pipeline.ai_service.analyze_call(
+                        transcript=real_transcript,
+                        metadata=ai_meta,
+                    )
+                    cached.intelligence = real_intel
+                    cached.processing_status = ProcessingStatus.COMPLETED
+                    cached.error_message = None
+                    logger.info(f"Auto-healed STT & AI for '{cached.provider_call_id}'!")
+            except Exception as exc:
+                logger.error(f"Auto-heal STT/AI failed for '{cached.provider_call_id}': {exc}", exc_info=True)
 
-            # Analyze with real Groq AI
-            ai_meta = {
-                "call_id": cached.provider_call_id,
-                "event_timestamp": cached.event_timestamp.isoformat() if cached.event_timestamp else None,
-            }
-            real_intel = await pipeline.ai_service.analyze_call(
-                transcript=real_transcript,
-                metadata=ai_meta,
+    # 2. Sync to Frappe CRM if Call Log is missing and intelligence is available
+    if cached.intelligence and not cached.frappe_call_log_id:
+        try:
+            logger.info(f"Synchronizing missing Frappe CRM Call Log for '{cached.provider_call_id}'...")
+            payload_data = cached.event_payload or {}
+            event = TelephonyWebhookPayload(
+                provider_call_id=cached.provider_call_id,
+                telephony_provider=payload_data.get("telephony_provider", "manual_upload"),
+                from_number=payload_data.get("from_number", "+15550003333"),
+                to_number=payload_data.get("to_number", "+15551234567"),
+                direction=cached.direction or CallDirection.OUTBOUND,
+                call_status=CallStatus.COMPLETED,
+                duration_seconds=cached.duration_seconds or 60,
+                agent_id=cached.agent_id or payload_data.get("agent_id"),
+                recording_url=payload_data.get("recording_url"),
+                event_timestamp=cached.event_timestamp,
+                lead_id=payload_data.get("lead_id"),
+                lead_name=cached.matched_lead or payload_data.get("lead_name"),
             )
-            cached.intelligence = real_intel
+            # Lookup lead in Frappe CRM
+            phone_to_check = event.to_number if event.direction == CallDirection.OUTBOUND else event.from_number
+            lead = await pipeline.frappe_client.lookup_lead_by_phone(phone_to_check)
+            lead_id = lead.get("name") if lead else event.lead_id
+            call_log = await pipeline.frappe_client.create_call_log(
+                call_event=event,
+                transcript=cached.transcript or "",
+                intelligence=cached.intelligence,
+                lead_id=lead_id,
+            )
+            if call_log and call_log.get("name"):
+                cached.frappe_call_log_id = call_log.get("name")
+                logger.info(f"Successfully created Frappe CRM Call Log: {cached.frappe_call_log_id}")
+        except Exception as crm_exc:
+            logger.error(f"Frappe CRM sync failed in auto-heal for '{cached.provider_call_id}': {crm_exc}")
 
-            if cached.processing_status != ProcessingStatus.COMPLETED:
-                cached.processing_status = ProcessingStatus.COMPLETED
-                cached.error_message = None
-
-            pipeline.idempotency_store.set(cached.provider_call_id, cached)
-            logger.info(f"Successfully auto-healed call '{cached.provider_call_id}' with real transcript and intelligence!")
-    except Exception as exc:
-        logger.error(f"Auto-heal failed for call '{cached.provider_call_id}': {exc}", exc_info=True)
+    # 3. Persist updated record to current store and Supabase
+    try:
+        pipeline.idempotency_store.set(cached.provider_call_id, cached)
+        from src.config import get_supabase_client
+        if get_supabase_client():
+            from src.supabase_store import SupabaseIdempotencyStore
+            sb_store = SupabaseIdempotencyStore()
+            sb_store.set(cached.provider_call_id, cached)
+    except Exception as save_exc:
+        logger.error(f"Failed to persist auto-healed call '{cached.provider_call_id}': {save_exc}")
 
     return cached
 
@@ -765,13 +816,16 @@ async def get_call_details(call_id: str):
     tags=["Analytics"],
 )
 async def reprocess_call(call_id: str):
-    """Force re-processing of a call's transcription and intelligence from its recording."""
+    """Force re-processing of a call's transcription, AI analysis, and CRM sync from its recording."""
     pipeline = get_pipeline()
     cached = pipeline.idempotency_store.get(call_id)
     if not cached:
         raise HTTPException(status_code=404, detail="Call not found")
 
-    cached.transcript = "are you interested in our course"
+    cached.transcript = None
+    cached.intelligence = None
+    cached.frappe_call_log_id = None
+    cached.processing_status = ProcessingStatus.PROCESSING
     cached = await auto_heal_call(cached)
     return cached
 

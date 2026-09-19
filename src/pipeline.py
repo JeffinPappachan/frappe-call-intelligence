@@ -246,7 +246,16 @@ class CallIntelligencePipeline:
             self.idempotency_store = idempotency_store
         elif settings.idempotency_backend == "supabase":
             from src.supabase_store import SupabaseIdempotencyStore
-            self.idempotency_store = SupabaseIdempotencyStore()
+            sb_store = SupabaseIdempotencyStore()
+            if sb_store.client is not None:
+                self.idempotency_store = sb_store
+            else:
+                logger.warning("Supabase client not configured; falling back to SQLite idempotency store.")
+                self.idempotency_store = SQLiteIdempotencyStore(
+                    db_path=settings.sqlite_db_path,
+                    ttl_seconds=settings.idempotency_ttl_seconds,
+                    max_items=settings.idempotency_max_items,
+                )
         elif settings.idempotency_backend == "sqlite":
             self.idempotency_store = SQLiteIdempotencyStore(
                 db_path=settings.sqlite_db_path,

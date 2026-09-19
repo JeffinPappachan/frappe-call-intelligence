@@ -1,7 +1,10 @@
+import asyncio
 import logging
 import os
 from abc import ABC, abstractmethod
 from typing import Any
+
+import httpx
 
 from src.config import Settings, get_settings
 
@@ -63,8 +66,6 @@ class RealSTTService(STTService):
         filename: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> str:
-        import httpx
-
         if not self.api_key:
             raise ValueError(
                 "Speech-to-text is not configured. Please configure the STT provider or explicitly enable mock mode."
@@ -128,41 +129,59 @@ class RealSTTService(STTService):
         }
 
         timeout = get_settings().stt_timeout_seconds
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(url, headers=headers, files=files, data=data)
-                response.raise_for_status()
-                text = (response.json().get("text") or "").strip()
+        last_exc = None
+        for attempt in range(4):
+            try:
+                files = {
+                    "file": (name, file_bytes, content_type),
+                }
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(url, headers=headers, files=files, data=data)
+                    if response.status_code == 429 and attempt < 3:
+                        wait_seconds = 2 ** (attempt + 1)
+                        logger.warning(f"[RealSTTService] Rate limit 429 received from Groq. Retrying in {wait_seconds}s (attempt {attempt + 1}/3)...")
+                        await asyncio.sleep(wait_seconds)
+                        continue
+                    response.raise_for_status()
+                    text = (response.json().get("text") or "").strip()
 
-                if not text:
-                    raise ValueError("Speech-to-text provider returned an empty transcript.")
+                    if not text:
+                        raise ValueError("Speech-to-text provider returned an empty transcript.")
 
-                logger.info(
-                    f"STT transcription successful for call '{call_id}'",
-                    extra={
-                        "call_id": call_id,
-                        "uploaded_filename": name,
-                        "audio_content_type": content_type,
-                        "audio_size": audio_size,
-                        "stt_provider": self.provider,
-                        "transcription_status": "success",
-                        "transcript_length": len(text),
-                    },
-                )
-                return text
-        except Exception as exc:
-            logger.error(
-                f"STT transcription failed for call '{call_id}': {exc}",
-                extra={
-                    "call_id": call_id,
-                    "uploaded_filename": name,
-                    "audio_content_type": content_type,
-                    "audio_size": audio_size,
-                    "stt_provider": self.provider,
-                    "transcription_status": "failed",
-                },
-            )
-            raise
+                    logger.info(
+                        f"STT transcription successful for call '{call_id}'",
+                        extra={
+                            "call_id": call_id,
+                            "uploaded_filename": name,
+                            "audio_content_type": content_type,
+                            "audio_size": audio_size,
+                            "stt_provider": self.provider,
+                            "transcription_status": "success",
+                            "transcript_length": len(text),
+                        },
+                    )
+                    return text
+            except Exception as exc:
+                last_exc = exc
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429 and attempt < 3:
+                    wait_seconds = 2 ** (attempt + 1)
+                    logger.warning(f"[RealSTTService] HTTPStatusError 429 received: {exc}. Retrying in {wait_seconds}s...")
+                    await asyncio.sleep(wait_seconds)
+                    continue
+                break
+
+        logger.error(
+            f"STT transcription failed for call '{call_id}': {last_exc}",
+            extra={
+                "call_id": call_id,
+                "uploaded_filename": name,
+                "audio_content_type": content_type,
+                "audio_size": audio_size,
+                "stt_provider": self.provider,
+                "transcription_status": "failed",
+            },
+        )
+        raise last_exc
 
 
 def get_stt_service(settings: Settings | None = None) -> STTService:
