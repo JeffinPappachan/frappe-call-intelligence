@@ -14,7 +14,8 @@ const CallDetailsModal = ({ call, onClose }) => {
       const fetchId = call.provider_call_id || call.frappe_call_log_id;
       if (fetchId) {
         setLoading(true);
-        fetch(`/api/v1/dashboard/calls/${encodeURIComponent(fetchId)}/intelligence`)
+        const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
+        fetch(`${API_BASE_URL}/api/v1/dashboard/calls/${encodeURIComponent(fetchId)}/intelligence`)
           .then(res => res.json())
           .then(data => {
             setIntelligence(data);

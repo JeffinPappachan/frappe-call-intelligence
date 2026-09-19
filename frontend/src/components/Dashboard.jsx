@@ -5,6 +5,8 @@ import ChartsGrid from './ChartsGrid';
 import CallsTable from './CallsTable';
 import CallDetailsModal from './CallDetailsModal';
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
+
 const Dashboard = () => {
   const [metrics, setMetrics] = useState({});
   const [calls, setCalls] = useState([]);
@@ -13,7 +15,7 @@ const Dashboard = () => {
 
   const fetchMetrics = async () => {
     try {
-      const res = await fetch('/api/v1/dashboard/metrics');
+      const res = await fetch(`${API_BASE_URL}/api/v1/dashboard/metrics`);
       if (res.ok) {
         const data = await res.json();
         setMetrics(data);
@@ -25,7 +27,7 @@ const Dashboard = () => {
 
   const fetchCalls = async () => {
     try {
-      const res = await fetch('/api/v1/dashboard/calls');
+      const res = await fetch(`${API_BASE_URL}/api/v1/dashboard/calls`);
       if (res.ok) {
         const data = await res.json();
         setCalls(data.calls || []);
@@ -51,7 +53,7 @@ const Dashboard = () => {
 
   const handleSimulateCall = async () => {
     try {
-      await fetch('/api/v1/telephony/webhook', {
+      await fetch(`${API_BASE_URL}/api/v1/telephony/webhook`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -75,7 +77,7 @@ const Dashboard = () => {
     const formData = new FormData();
     formData.append('file', file);
     try {
-      await fetch('/api/v1/telephony/process-audio', {
+      await fetch(`${API_BASE_URL}/api/v1/telephony/process-audio`, {
         method: 'POST',
         body: formData
       });
