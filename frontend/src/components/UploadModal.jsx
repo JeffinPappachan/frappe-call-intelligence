@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Upload, FileAudio } from 'lucide-react';
 import './UploadModal.css';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
 const UploadModal = ({ isOpen, onClose, onUpload }) => {
   const [file, setFile] = useState(null);
@@ -15,13 +15,15 @@ const UploadModal = ({ isOpen, onClose, onUpload }) => {
   const [leadPhone, setLeadPhone] = useState('');
   const [selectedAgent, setSelectedAgent] = useState('');
   const [customAgent, setCustomAgent] = useState('');
+  const [agentPhone, setAgentPhone] = useState('');
   const [callType, setCallType] = useState('outbound');
   const [callDate, setCallDate] = useState('');
   const [isUploading, setIsUploading] = useState(false);
-
+  
   useEffect(() => {
     if (isOpen) {
       fetchOptions();
+      
       // Reset form
       setFile(null);
       setSelectedContact('');
@@ -37,8 +39,8 @@ const UploadModal = ({ isOpen, onClose, onUpload }) => {
     setLoadingOptions(true);
     try {
       const [contactsRes, agentsRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/v1/crm/contacts`),
-        fetch(`${API_BASE_URL}/api/v1/crm/agents`)
+        fetch(`${API_BASE_URL}/api/v1/crm/contacts`, { cache: 'no-store' }),
+        fetch(`${API_BASE_URL}/api/v1/crm/agents`, { cache: 'no-store' })
       ]);
       const contactsData = await contactsRes.json();
       const agentsData = await agentsRes.json();
@@ -61,12 +63,32 @@ const UploadModal = ({ isOpen, onClose, onUpload }) => {
     setSelectedContact(contactId);
     
     if (contactId && contactId !== 'custom') {
-      const contact = contacts.find(c => c.name === contactId);
-      if (contact && contact.mobile_no) {
-        setLeadPhone(contact.mobile_no);
+      if (contactId.startsWith('saved-')) {
+        setLeadPhone(contactId.replace('saved-', ''));
+      } else {
+        const contact = contacts.find(c => c.name === contactId);
+        if (contact && contact.mobile_no) {
+          setLeadPhone(contact.mobile_no);
+        }
       }
     } else {
       setLeadPhone('');
+    }
+  };
+
+  const handleAgentChange = (e) => {
+    const agId = e.target.value;
+    setSelectedAgent(agId);
+    
+    if (agId && agId !== 'custom') {
+      const agent = agents.find(a => a.name === agId);
+      if (agent && agent.mobile_no) {
+        setAgentPhone(agent.mobile_no);
+      } else {
+        setAgentPhone('');
+      }
+    } else {
+      setAgentPhone('');
     }
   };
 
@@ -79,14 +101,19 @@ const UploadModal = ({ isOpen, onClose, onUpload }) => {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('lead_phone', leadPhone);
-    if (selectedContact && selectedContact !== 'custom') {
+    if (selectedContact && selectedContact !== 'custom' && !selectedContact.startsWith('saved-')) {
       formData.append('lead_id', selectedContact);
     }
     
     if (selectedAgent === 'custom' && customAgent) {
       formData.append('agent_id', customAgent);
+    } else if (selectedAgent && selectedAgent.startsWith('saved-')) {
+      formData.append('agent_id', selectedAgent.replace('saved-', ''));
     } else if (selectedAgent && selectedAgent !== 'custom') {
       formData.append('agent_id', selectedAgent);
+    }
+    if (agentPhone) {
+      formData.append('agent_phone', agentPhone);
     }
     formData.append('direction', callType);
     if (callDate) {
@@ -132,7 +159,9 @@ const UploadModal = ({ isOpen, onClose, onUpload }) => {
           </div>
 
           <div className="form-group">
-            <label>Caller / CRM Contact</label>
+            <label>
+              {callType === 'inbound' ? 'Caller Name (CRM Contact)' : 'Receiver Name (CRM Contact)'}
+            </label>
             <select 
               value={selectedContact} 
               onChange={handleContactChange}
@@ -163,10 +192,12 @@ const UploadModal = ({ isOpen, onClose, onUpload }) => {
 
           <div className="form-row">
             <div className="form-group">
-              <label>Agent / Tele-caller</label>
+              <label>
+                {callType === 'inbound' ? 'Receiver Name (Agent)' : 'Caller Name (Agent)'}
+              </label>
               <select 
                 value={selectedAgent} 
-                onChange={(e) => setSelectedAgent(e.target.value)}
+                onChange={handleAgentChange}
                 disabled={loadingOptions}
               >
                 <option value="">-- Select Agent --</option>
@@ -198,6 +229,27 @@ const UploadModal = ({ isOpen, onClose, onUpload }) => {
                 <option value="outbound">Outbound</option>
                 <option value="inbound">Inbound</option>
               </select>
+            </div>
+          </div>
+
+          <div className="form-row">
+            <div className="form-group">
+              <label>From Number</label>
+              <input 
+                type="text" 
+                value={callType === 'inbound' ? leadPhone : agentPhone} 
+                onChange={(e) => callType === 'inbound' ? setLeadPhone(e.target.value) : setAgentPhone(e.target.value)} 
+                placeholder="E.g. +15551234567"
+              />
+            </div>
+            <div className="form-group">
+              <label>To Number</label>
+              <input 
+                type="text" 
+                value={callType === 'outbound' ? leadPhone : agentPhone} 
+                onChange={(e) => callType === 'outbound' ? setLeadPhone(e.target.value) : setAgentPhone(e.target.value)} 
+                placeholder="E.g. +15551234567"
+              />
             </div>
           </div>
           

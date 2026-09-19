@@ -180,15 +180,66 @@ async def get_metrics():
 @app.get("/api/v1/crm/contacts", tags=["CRM"])
 async def get_crm_contacts():
     from src.frappe_client import get_frappe_client
+    from src.config import get_supabase_client
     client = get_frappe_client()
-    return {"data": await client.get_crm_contacts()}
+    frappe_contacts = await client.get_crm_contacts()
+
+    # Append historical manual upload phones from Supabase
+    try:
+        supabase = get_supabase_client()
+        res = supabase.table("calls").select("event_payload").execute()
+        manual_phones = set()
+        for call in res.data:
+            payload = call.get("event_payload", {})
+            if payload and payload.get("telephony_provider") == "manual_upload":
+                # For manual uploads, the lead phone is stored in to_number (or from_number)
+                phone = payload.get("to_number") or payload.get("from_number")
+                if phone:
+                    manual_phones.add(phone)
+
+        for phone in manual_phones:
+            if not any(c.get("mobile_no") == phone for c in frappe_contacts):
+                frappe_contacts.append({
+                    "name": f"saved-{phone}",
+                    "lead_name": "Custom",
+                    "organization": "",
+                    "mobile_no": phone
+                })
+    except Exception:
+        pass
+
+    return {"data": frappe_contacts}
 
 
 @app.get("/api/v1/crm/agents", tags=["CRM"])
 async def get_crm_agents():
     from src.frappe_client import get_frappe_client
+    from src.config import get_supabase_client
     client = get_frappe_client()
-    return {"data": await client.get_crm_agents()}
+    frappe_agents = await client.get_crm_agents()
+
+    # Append historical manual upload agents from Supabase
+    try:
+        supabase = get_supabase_client()
+        res = supabase.table("calls").select("agent_id, event_payload").execute()
+        manual_agents = set()
+        for call in res.data:
+            payload = call.get("event_payload", {})
+            if payload and payload.get("telephony_provider") == "manual_upload":
+                agent = call.get("agent_id")
+                if agent:
+                    manual_agents.add(agent)
+
+        for agent in manual_agents:
+            if not any(a.get("name") == agent or a.get("full_name") == agent for a in frappe_agents):
+                frappe_agents.append({
+                    "name": f"saved-{agent}",
+                    "full_name": agent
+                })
+    except Exception:
+        pass
+
+    return {"data": frappe_agents}
 
 
 @app.post(
@@ -275,7 +326,8 @@ ALLOWED_AUDIO_MIME_TYPES = {
 )
 async def process_audio(
     file: UploadFile = File(..., description="Audio recording file (WAV, MP3, M4A)"),
-    lead_phone: str = Form(..., description="Lead phone number for CRM linking"),
+    lead_phone: str | None = Form(default=None, description="Lead phone number for CRM linking"),
+    agent_phone: str | None = Form(default=None, description="Agent phone number"),
     agent_id: str | None = Form(default="jeffinpappachan110@gmail.com"),
     direction: CallDirection | None = Form(default=CallDirection.OUTBOUND),
     duration_seconds: int | None = Form(default=60),
@@ -372,12 +424,21 @@ async def process_audio(
             except ValueError:
                 pass
 
+        # Determine actual from/to numbers based on direction
+        call_direction = direction or CallDirection.OUTBOUND
+        if call_direction == CallDirection.OUTBOUND:
+            actual_from = agent_phone or ""
+            actual_to = lead_phone or ""
+        else:
+            actual_from = lead_phone or ""
+            actual_to = agent_phone or ""
+
         event = TelephonyWebhookPayload(
             provider_call_id=call_id,
             telephony_provider="manual_upload",
-            from_number="+910000000000",
-            to_number=lead_phone,
-            direction=direction or CallDirection.OUTBOUND,
+            from_number=actual_from,
+            to_number=actual_to,
+            direction=call_direction,
             call_status=CallStatus.COMPLETED,
             duration_seconds=detected_duration or 60,
             recording_url=None,

@@ -191,17 +191,17 @@ class FrappeCRMClient:
         """Fetch a list of enabled users (Agents) from Frappe."""
         if self.mock_mode:
             return [
-                {"name": "john.demo@example.com", "full_name": "John Parker"},
-                {"name": "sarah.demo@example.com", "full_name": "Sarah Connor"},
-                {"name": "emily.demo@example.com", "full_name": "Emily Chen"},
-                {"name": "jeffinpappachan110@gmail.com", "full_name": "Jeffin Pappachan"}
+                {"name": "john.demo@example.com", "full_name": "John Parker", "mobile_no": "+15550001111"},
+                {"name": "sarah.demo@example.com", "full_name": "Sarah Connor", "mobile_no": "+15550002222"},
+                {"name": "emily.demo@example.com", "full_name": "Emily Chen", "mobile_no": "+15550003333"},
+                {"name": "jeffinpappachan110@gmail.com", "full_name": "Jeffin Pappachan", "mobile_no": "+91 9746910759"}
             ]
 
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 url = f"{self.base_url}/api/resource/User"
                 params: dict[str, str | int | float | bool | None] = {
-                    "fields": '["name","email","full_name"]',
+                    "fields": '["name","email","full_name","mobile_no","phone"]',
                     "filters": '[["enabled","=",1]]',
                     "limit_page_length": 100,
                 }
@@ -242,6 +242,8 @@ class FrappeCRMClient:
             return "Exotel"
         if "twilio" in prov:
             return "Twilio"
+        if "manual" in prov:
+            return "Manual"
         return "Manual"
 
     def _map_call_type(self, direction: CallDirection) -> str:
@@ -271,27 +273,14 @@ class FrappeCRMClient:
             logger.info(f"[FrappeCRMClient] CRM Call Log already exists: {existing.get('name')}")
             return existing
 
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        start_time_str = (
-            (datetime.now() - timedelta(seconds=call_event.duration_seconds)).strftime("%Y-%m-%d %H:%M:%S")
-            if call_event.duration_seconds
-            else now_str
-        )
+        start_time_dt = call_event.event_timestamp or datetime.now()
+        start_time_str = start_time_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-        # Resolve receiver safely for Frappe User link field
-        receiver_user = None
-        if call_event.agent_id:
-            agent_lower = call_event.agent_id.lower()
-            if "john" in agent_lower:
-                receiver_user = "john.demo@example.com"
-            elif "sarah" in agent_lower:
-                receiver_user = "sarah.demo@example.com"
-            elif "emily" in agent_lower:
-                receiver_user = "emily.demo@example.com"
-            elif "jeffin" in agent_lower:
-                receiver_user = "jeffinpappachan110@gmail.com"
-            elif "@" in call_event.agent_id:
-                receiver_user = call_event.agent_id
+        end_time_dt = start_time_dt + timedelta(seconds=call_event.duration_seconds)
+        end_time_str = end_time_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        # Resolve receiver using the exact provided agent_id
+        receiver_user = call_event.agent_id if call_event.agent_id else None
 
         log_payload = {
             "doctype": "CRM Call Log",
@@ -303,7 +292,7 @@ class FrappeCRMClient:
             "status": self._map_call_status(call_event.call_status),
             "duration": float(call_event.duration_seconds),
             "start_time": start_time_str,
-            "end_time": now_str,
+            "end_time": end_time_str,
             "recording_url": call_event.recording_url or "",
             "reference_doctype": "CRM Lead" if lead_id else None,
             "reference_docname": lead_id if lead_id else None,
@@ -453,17 +442,7 @@ class FrappeCRMClient:
             fallback_dt = (datetime.now() + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
             due_date_str = fallback_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-        assigned_user = assigned_to or ""
-        if assigned_user:
-            agent_lower = assigned_user.lower()
-            if "john" in agent_lower:
-                assigned_user = "john.demo@example.com"
-            elif "sarah" in agent_lower:
-                assigned_user = "sarah.demo@example.com"
-            elif "emily" in agent_lower:
-                assigned_user = "emily.demo@example.com"
-            elif "jeffin" in agent_lower:
-                assigned_user = "jeffinpappachan110@gmail.com"
+        assigned_user = assigned_to if assigned_to else None
 
         task_payload = {
             "doctype": "CRM Task",
