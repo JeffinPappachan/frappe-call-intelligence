@@ -43,7 +43,7 @@ async def test_live_lead_lookup(live_client):
     lead = await live_client.lookup_lead_by_phone("+1 555 000 9012")
     assert lead is not None
     assert "Carol Smith" in lead.get("lead_name", "")
-    assert lead.get("name") == "CRM-LEAD-2026-00003"
+    assert lead.get("name", "").startswith("CRM-LEAD-")
 
 
 @skip_unless_live

@@ -860,31 +860,37 @@ async def get_call_recording(call_id: str):
 
     client = get_supabase_client()
     if client:
-        try:
-            audio_bytes = client.storage.from_("recordings").download(storage_path)
-            if audio_bytes:
-                ext = os.path.splitext(storage_path)[1].lower()
-                mime_map = {
-                    ".wav": "audio/wav",
-                    ".mp3": "audio/mpeg",
-                    ".m4a": "audio/m4a",
-                    ".mp4": "audio/mp4",
-                    ".ogg": "audio/ogg",
-                    ".webm": "audio/webm",
-                    ".flac": "audio/flac",
-                }
-                media_type = mime_map.get(ext, "audio/mpeg")
-                return Response(
-                    content=audio_bytes,
-                    media_type=media_type,
-                    headers={
-                        "Accept-Ranges": "bytes",
-                        "Content-Length": str(len(audio_bytes)),
-                        "Content-Disposition": f'inline; filename="{os.path.basename(storage_path)}"',
-                    },
-                )
-        except Exception as exc:
-            logger.warning(f"Failed to stream recording from Supabase storage for {call_id}: {exc}")
+        candidates = [
+            storage_path,
+            f"{call_id}/{os.path.basename(storage_path)}",
+            f"{call_id}/{os.path.basename(storage_path).replace(call_id + '_', '')}",
+        ]
+        for cand in candidates:
+            try:
+                audio_bytes = client.storage.from_("recordings").download(cand)
+                if audio_bytes:
+                    ext = os.path.splitext(cand)[1].lower()
+                    mime_map = {
+                        ".wav": "audio/wav",
+                        ".mp3": "audio/mpeg",
+                        ".m4a": "audio/m4a",
+                        ".mp4": "audio/mp4",
+                        ".ogg": "audio/ogg",
+                        ".webm": "audio/webm",
+                        ".flac": "audio/flac",
+                    }
+                    media_type = mime_map.get(ext, "audio/mpeg")
+                    return Response(
+                        content=audio_bytes,
+                        media_type=media_type,
+                        headers={
+                            "Accept-Ranges": "bytes",
+                            "Content-Length": str(len(audio_bytes)),
+                            "Content-Disposition": f'inline; filename="{os.path.basename(storage_path)}"',
+                        },
+                    )
+            except Exception as exc:
+                logger.debug(f"Candidate {cand} not found in Supabase storage: {exc}")
 
     raise HTTPException(status_code=404, detail="Recording not found")
 

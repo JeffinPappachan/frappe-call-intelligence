@@ -122,11 +122,10 @@ class RealAIService(AIService):
         )
 
         url = "https://api.openai.com/v1/chat/completions"
-        model_name = "gpt-4o-mini"
-
+        candidate_models = ["gpt-4o-mini"]
         if self.provider == "groq":
             url = "https://api.groq.com/openai/v1/chat/completions"
-            model_name = "openai/gpt-oss-20b"
+            candidate_models = ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b"]
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -134,46 +133,58 @@ class RealAIService(AIService):
         }
 
         schema_info = CallIntelligence.model_json_schema()
-
-        data = {
-            "model": model_name,
-            "messages": [
-                {"role": "system", "content": system_prompt + f"\n\nJSON Schema:\n{json.dumps(schema_info)}"},
-                {"role": "user", "content": user_content}
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.1
-        }
-
         timeout = get_settings().ai_timeout_seconds
         last_exc = None
         content = None
-        for attempt in range(4):
-            try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    response = await client.post(url, headers=headers, json=data)
-                    if response.status_code == 429 and attempt < 3:
+
+        for model_name in candidate_models:
+            data = {
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": system_prompt + f"\n\nJSON Schema:\n{json.dumps(schema_info)}"},
+                    {"role": "user", "content": user_content}
+                ],
+                "response_format": {"type": "json_object"},
+                "temperature": 0.1
+            }
+
+            model_succeeded = False
+            for attempt in range(3):
+                try:
+                    async with httpx.AsyncClient(timeout=timeout) as client:
+                        response = await client.post(url, headers=headers, json=data)
+                        if response.status_code == 429:
+                            resp_text = response.text
+                            # If daily limit reached, immediately switch to next model
+                            if "tokens per day" in resp_text.lower() or "tpd" in resp_text.lower():
+                                logger.warning(f"[RealAIService] Model {model_name} hit daily token quota. Switching to next model...")
+                                break
+                            if attempt < 2:
+                                wait_seconds = 2 ** (attempt + 1)
+                                logger.warning(f"[RealAIService] Rate limit 429 on {model_name}. Retrying in {wait_seconds}s (attempt {attempt + 1}/2)...")
+                                import asyncio
+                                await asyncio.sleep(wait_seconds)
+                                continue
+                        response.raise_for_status()
+
+                        content = response.json()["choices"][0]["message"]["content"]
+                        model_succeeded = True
+                        break
+                except Exception as exc:
+                    last_exc = exc
+                    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429 and attempt < 2:
                         wait_seconds = 2 ** (attempt + 1)
-                        logger.warning(f"[RealAIService] Rate limit 429 received from Groq. Retrying in {wait_seconds}s (attempt {attempt + 1}/3)...")
+                        logger.warning(f"[RealAIService] HTTPStatusError 429 received. Retrying in {wait_seconds}s...")
                         import asyncio
                         await asyncio.sleep(wait_seconds)
                         continue
-                    response.raise_for_status()
-
-                    content = response.json()["choices"][0]["message"]["content"]
+                    logger.warning(f"[RealAIService] Model {model_name} attempt failed: {exc}")
                     break
-            except Exception as exc:
-                last_exc = exc
-                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429 and attempt < 3:
-                    wait_seconds = 2 ** (attempt + 1)
-                    logger.warning(f"[RealAIService] HTTPStatusError 429 received. Retrying in {wait_seconds}s...")
-                    import asyncio
-                    await asyncio.sleep(wait_seconds)
-                    continue
-                logger.error(f"[RealAIService] Analysis attempt failed: {exc}")
-                raise
+
+            if model_succeeded and content:
+                break
         else:
-            raise last_exc or ValueError("Failed to get response from AI service after retries")
+            raise last_exc or ValueError("Failed to get response from AI service across all models")
 
         try:
             parsed = json.loads(content)
