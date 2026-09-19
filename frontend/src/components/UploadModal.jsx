@@ -166,133 +166,135 @@ const UploadModal = ({ isOpen, onClose, onUpload }) => {
         </div>
         
         <form onSubmit={handleSubmit} className="upload-form">
-          <div className="form-group file-upload-area">
-            <label htmlFor="audio-file" className="file-label">
-              <FileAudio size={48} className="text-gray-400" />
-              <div className="mt-2">
-                <span className="file-name-btn">{file ? file.name : "Select Audio File"}</span>
-              </div>
-              <input 
-                id="audio-file"
-                type="file" 
-                accept="audio/*" 
-                onChange={(e) => setFile(e.target.files[0])}
-                required
-                className="hidden"
-              />
-            </label>
-          </div>
-
-          <div className="form-group">
-            <label>
-              {callType === 'inbound' ? 'Caller Name (CRM Contact)' : 'Receiver Name (CRM Contact)'}
-            </label>
-            <select 
-              value={selectedContact} 
-              onChange={handleContactChange}
-              disabled={loadingOptions}
-            >
-              <option value="">-- Select CRM Contact --</option>
-              {contacts.map(c => (
-                <option key={c.name} value={c.name}>
-                  {c.lead_name} {c.organization ? `(${c.organization})` : ''} - {c.mobile_no}
-                </option>
-              ))}
-              <option value="custom">-- Add Custom Name --</option>
-            </select>
-          </div>
-
-          {selectedContact === 'custom' && (
-            <div className="form-group">
-              <label>
-                {callType === 'inbound' ? 'Custom Caller Name' : 'Custom Receiver Name'} <span className="required">*</span>
+          <div className="upload-form-body">
+            <div className="form-group file-upload-area">
+              <label htmlFor="audio-file" className="file-label">
+                <FileAudio size={48} className="text-gray-400" />
+                <div className="mt-2">
+                  <span className="file-name-btn">{file ? file.name : "Select Audio File"}</span>
+                </div>
+                <input 
+                  id="audio-file"
+                  type="file" 
+                  accept="audio/*" 
+                  onChange={(e) => setFile(e.target.files[0])}
+                  required
+                  className="hidden"
+                />
               </label>
-              <input 
-                type="text" 
-                value={customContact} 
-                onChange={(e) => setCustomContact(e.target.value)} 
-                placeholder="E.g. John Doe"
-                required
-              />
             </div>
-          )}
 
-          <div className="form-row">
             <div className="form-group">
               <label>
-                {callType === 'inbound' ? 'Receiver Name (Agent)' : 'Caller Name (Agent)'}
+                {callType === 'inbound' ? 'Caller Name (CRM Contact)' : 'Receiver Name (CRM Contact)'}
               </label>
               <select 
-                value={selectedAgent} 
-                onChange={handleAgentChange}
+                value={selectedContact} 
+                onChange={handleContactChange}
                 disabled={loadingOptions}
               >
-                <option value="">-- Select Agent --</option>
-                {agents.map(a => (
-                  <option key={a.name} value={a.name}>
-                    {a.full_name || a.name}
+                <option value="">-- Select CRM Contact --</option>
+                {contacts.map(c => (
+                  <option key={c.name} value={c.name}>
+                    {c.lead_name} {c.organization ? `(${c.organization})` : ''} - {c.mobile_no}
                   </option>
                 ))}
-                <option value="custom">-- Add Custom Agent --</option>
+                <option value="custom">-- Add Custom Name --</option>
               </select>
             </div>
 
-            {selectedAgent === 'custom' && (
+            {selectedContact === 'custom' && (
               <div className="form-group">
-                <label>Custom Agent Name <span className="required">*</span></label>
+                <label>
+                  {callType === 'inbound' ? 'Custom Caller Name' : 'Custom Receiver Name'} <span className="required">*</span>
+                </label>
                 <input 
                   type="text" 
-                  value={customAgent} 
-                  onChange={(e) => setCustomAgent(e.target.value)} 
-                  placeholder="E.g. Sarah Jenkins"
+                  value={customContact} 
+                  onChange={(e) => setCustomContact(e.target.value)} 
+                  placeholder="E.g. John Doe"
                   required
                 />
               </div>
             )}
 
-            <div className="form-group">
-              <label>Call Type</label>
-              <select value={callType} onChange={(e) => setCallType(e.target.value)}>
-                <option value="outbound">Outbound</option>
-                <option value="inbound">Inbound</option>
-              </select>
-            </div>
-          </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label>
+                  {callType === 'inbound' ? 'Receiver Name (Agent)' : 'Caller Name (Agent)'}
+                </label>
+                <select 
+                  value={selectedAgent} 
+                  onChange={handleAgentChange}
+                  disabled={loadingOptions}
+                >
+                  <option value="">-- Select Agent --</option>
+                  {agents.map(a => (
+                    <option key={a.name} value={a.name}>
+                      {a.full_name || a.name}
+                    </option>
+                  ))}
+                  <option value="custom">-- Add Custom Agent --</option>
+                </select>
+              </div>
 
-          <div className="form-row">
+              {selectedAgent === 'custom' && (
+                <div className="form-group">
+                  <label>Custom Agent Name <span className="required">*</span></label>
+                  <input 
+                    type="text" 
+                    value={customAgent} 
+                    onChange={(e) => setCustomAgent(e.target.value)} 
+                    placeholder="E.g. Sarah Jenkins"
+                    required
+                  />
+                </div>
+              )}
+
+              <div className="form-group">
+                <label>Call Type</label>
+                <select value={callType} onChange={(e) => setCallType(e.target.value)}>
+                  <option value="outbound">Outbound</option>
+                  <option value="inbound">Inbound</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label>
+                  From Number {callType === 'inbound' && <span className="required">*</span>}
+                </label>
+                <input 
+                  type="text" 
+                  value={callType === 'inbound' ? leadPhone : agentPhone} 
+                  onChange={(e) => callType === 'inbound' ? setLeadPhone(e.target.value) : setAgentPhone(e.target.value)} 
+                  placeholder="E.g. +15551234567"
+                  required={callType === 'inbound'}
+                />
+              </div>
+              <div className="form-group">
+                <label>
+                  To Number {callType === 'outbound' && <span className="required">*</span>}
+                </label>
+                <input 
+                  type="text" 
+                  value={callType === 'outbound' ? leadPhone : agentPhone} 
+                  onChange={(e) => callType === 'outbound' ? setLeadPhone(e.target.value) : setAgentPhone(e.target.value)} 
+                  placeholder="E.g. +15551234567"
+                  required={callType === 'outbound'}
+                />
+              </div>
+            </div>
+            
             <div className="form-group">
-              <label>
-                From Number {callType === 'inbound' && <span className="required">*</span>}
-              </label>
+              <label>Call Date / Time</label>
               <input 
-                type="text" 
-                value={callType === 'inbound' ? leadPhone : agentPhone} 
-                onChange={(e) => callType === 'inbound' ? setLeadPhone(e.target.value) : setAgentPhone(e.target.value)} 
-                placeholder="E.g. +15551234567"
-                required={callType === 'inbound'}
+                type="datetime-local" 
+                value={callDate}
+                onChange={(e) => setCallDate(e.target.value)}
               />
             </div>
-            <div className="form-group">
-              <label>
-                To Number {callType === 'outbound' && <span className="required">*</span>}
-              </label>
-              <input 
-                type="text" 
-                value={callType === 'outbound' ? leadPhone : agentPhone} 
-                onChange={(e) => callType === 'outbound' ? setLeadPhone(e.target.value) : setAgentPhone(e.target.value)} 
-                placeholder="E.g. +15551234567"
-                required={callType === 'outbound'}
-              />
-            </div>
-          </div>
-          
-          <div className="form-group">
-            <label>Call Date / Time</label>
-            <input 
-              type="datetime-local" 
-              value={callDate}
-              onChange={(e) => setCallDate(e.target.value)}
-            />
           </div>
 
           <div className="modal-actions">

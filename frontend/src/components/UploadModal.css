@@ -4,28 +4,29 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background-color: rgba(0, 0, 0, 0.7);
+  background-color: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(4px);
   display: flex;
-  align-items: flex-start; /* Changed from center to prevent top cutoff */
+  align-items: center;
   justify-content: center;
   z-index: 1000;
   animation: fadeIn 0.2s ease-in-out;
-  padding: 2rem 1rem; /* Added more padding top/bottom */
-  overflow-y: auto; /* Allow scrolling on the overlay itself */
+  padding: 1.5rem 1rem;
 }
 
 .modal-content {
   background: var(--surface-color);
-  border-radius: 12px;
+  border-radius: 14px;
   width: 90%;
-  max-width: 500px;
-  /* max-height removed so it can expand, overlay will scroll it */
-  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5);
+  max-width: 520px;
+  max-height: 88vh;
+  box-shadow: 0 16px 40px 0 rgba(0, 0, 0, 0.6);
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border-color);
   color: var(--text-primary);
-  margin: 2rem auto; /* Ensures space at top and allows scrolling down without top cutoff */
+  overflow: hidden;
+  margin: 0;
 }
 
 .modal-header {
@@ -34,10 +35,8 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  position: sticky;
-  top: 0;
   background: var(--surface-color);
-  z-index: 10;
+  flex-shrink: 0;
 }
 
 .modal-header h2 {
@@ -65,10 +64,39 @@
 }
 
 .upload-form {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.upload-form-body {
   padding: 20px;
   display: flex;
   flex-direction: column;
   gap: 16px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.upload-form-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.upload-form-body::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 4px;
+}
+
+.upload-form-body::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 4px;
+}
+
+.upload-form-body::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-primary);
 }
 
 .form-group {
@@ -175,13 +203,10 @@
   display: flex;
   justify-content: flex-end;
   gap: 12px;
-  margin-top: 16px;
-  padding-top: 20px;
+  padding: 14px 20px;
   border-top: 1px solid var(--border-color);
-  position: sticky;
-  bottom: 0;
   background: var(--surface-color);
-  padding-bottom: 10px;
+  flex-shrink: 0;
 }
 
 @keyframes fadeIn {
