@@ -42,6 +42,9 @@ class Settings(BaseSettings):
         "http://localhost:8000",
         "http://127.0.0.1:8000",
         "http://localhost:3000",
+        "http://localhost:5173",
+        "https://ai-call-intelligence.netlify.app",
+        "https://frappe-call-intelligence-production.up.railway.app",
     ]
     store_transcript_in_crm: Literal["full", "truncated", "none"] = "full"
     admin_api_token: str = ""
