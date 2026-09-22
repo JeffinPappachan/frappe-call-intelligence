@@ -285,12 +285,13 @@ The project includes an extensive test suite covering schema validation, STT/AI 
 ### Frontend (Netlify)
 - **Live URL:** [https://ai-call-intelligence.netlify.app](https://ai-call-intelligence.netlify.app)
 - Automatically deploys from `main` branch with build command `npm run build` in `frontend/`.
-- Configured with `VITE_API_BASE_URL` pointing to the live Render backend.
+- Configured with `VITE_API_BASE_URL` pointing to the live Railway backend.
 
-### Backend (Render)
-- **Live API:** `https://ai-call-intelligence-api.onrender.com`
+### Backend (Railway)
+- **Live API:** `https://frappe-call-intelligence-production.up.railway.app`
 - Dockerized deployment built directly from [Dockerfile](Dockerfile).
-- Environment variables configured in Render Dashboard:
+- Automatic port binding via dynamic `$PORT`.
+- Environment variables configured in Railway Dashboard:
   - `MOCK_MODE=false`
   - `AI_PROVIDER=groq`
   - `STT_PROVIDER=groq`
@@ -299,6 +300,9 @@ The project includes an extensive test suite covering schema validation, STT/AI 
   - `FRAPPE_BASE_URL=https://crm-chm-lly.nvi.frappe.cloud`
   - `FRAPPE_API_KEY=...`
   - `FRAPPE_API_SECRET=...`
+  - `IDEMPOTENCY_BACKEND=supabase`
+  - `SUPABASE_URL=https://lwxwnitinlddzfyegyyd.supabase.co`
+  - `SUPABASE_SERVICE_KEY=...`
 
 ---
 
